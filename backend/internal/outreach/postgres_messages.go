@@ -190,6 +190,7 @@ const inboxThreadsCTE = `
 	  FROM email_messages m
 	  LEFT JOIN restaurants r ON r.id = m.restaurant_id
 	  WHERE m.received_at >= now() - interval '10 days'
+	     OR $3 <> ''
 	), thread_rollup AS (
 	  SELECT mailbox_key,
 	         conversation_key,
@@ -240,10 +241,20 @@ const inboxThreadsListQuery = inboxThreadsCTE + `
 		FROM threads
 		WHERE ($1 = '' OR mailbox_key = $1)
 		  AND (NOT $2 OR unread_count > 0)
+		  AND (
+		    $3 = ''
+		    OR restaurant_name ILIKE '%' || $3 || '%'
+		    OR email ILIKE '%' || $3 || '%'
+		    OR subject ILIKE '%' || $3 || '%'
+		    OR text_snippet ILIKE '%' || $3 || '%'
+		    OR from_email ILIKE '%' || $3 || '%'
+		    OR to_email ILIKE '%' || $3 || '%'
+		    OR mailbox_key ILIKE '%' || $3 || '%'
+		  )
 		ORDER BY ` + inboxThreadsLatestFirstOrder + `
-		LIMIT $3 OFFSET $4`
+		LIMIT $4 OFFSET $5`
 
-func (repo *Postgres) ListInbox(ctx context.Context, unreadOnly bool, mailboxKey string, limit, offset int) (InboxList, error) {
+func (repo *Postgres) ListInbox(ctx context.Context, unreadOnly bool, mailboxKey, search string, limit, offset int) (InboxList, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
@@ -251,17 +262,28 @@ func (repo *Postgres) ListInbox(ctx context.Context, unreadOnly bool, mailboxKey
 		offset = 0
 	}
 	mailboxKey = strings.TrimSpace(mailboxKey)
+	search = strings.TrimSpace(search)
 	countQuery := inboxThreadsCTE + `
 		SELECT count(*)
 		FROM threads
 		WHERE ($1 = '' OR mailbox_key = $1)
-		  AND (NOT $2 OR unread_count > 0)`
+		  AND (NOT $2 OR unread_count > 0)
+		  AND (
+		    $3 = ''
+		    OR restaurant_name ILIKE '%' || $3 || '%'
+		    OR email ILIKE '%' || $3 || '%'
+		    OR subject ILIKE '%' || $3 || '%'
+		    OR text_snippet ILIKE '%' || $3 || '%'
+		    OR from_email ILIKE '%' || $3 || '%'
+		    OR to_email ILIKE '%' || $3 || '%'
+		    OR mailbox_key ILIKE '%' || $3 || '%'
+		  )`
 	var total int
-	if err := repo.pool.QueryRow(ctx, countQuery, mailboxKey, unreadOnly).Scan(&total); err != nil {
+	if err := repo.pool.QueryRow(ctx, countQuery, mailboxKey, unreadOnly, search).Scan(&total); err != nil {
 		return InboxList{}, fmt.Errorf("count inbox threads: %w", err)
 	}
 
-	rows, err := repo.pool.Query(ctx, inboxThreadsListQuery, mailboxKey, unreadOnly, limit, offset)
+	rows, err := repo.pool.Query(ctx, inboxThreadsListQuery, mailboxKey, unreadOnly, search, limit, offset)
 	if err != nil {
 		return InboxList{}, fmt.Errorf("list inbox threads: %w", err)
 	}

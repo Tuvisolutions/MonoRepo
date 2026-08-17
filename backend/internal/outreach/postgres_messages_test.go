@@ -93,3 +93,21 @@ func TestInboxThreadsUseLatestReceivedMessageAndOrderByItsTimestamp(t *testing.T
 		}
 	}
 }
+
+func TestInboxQuerySupportsGlobalSearch(t *testing.T) {
+	t.Parallel()
+
+	for _, field := range []string{
+		"restaurant_name",
+		"email",
+		"subject",
+		"text_snippet",
+		"from_email",
+		"to_email",
+		"mailbox_key",
+	} {
+		if !strings.Contains(inboxThreadsListQuery, field+" ILIKE") {
+			t.Fatalf("inbox global search does not include %s: %s", field, inboxThreadsListQuery)
+		}
+	}
+}

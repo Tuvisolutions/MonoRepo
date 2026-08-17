@@ -14,6 +14,8 @@ const refreshIntervalMs = 15_000;
 export function OutreachInbox() {
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [mailboxKey, setMailboxKey] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [offset, setOffset] = useState(0);
   const [data, setData] = useState<InboxListResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +39,7 @@ export function OutreachInbox() {
         query: {
           unread: unreadOnly ? true : undefined,
           mailbox: mailboxKey || undefined,
+          q: searchQuery || undefined,
           limit: pageSize,
           offset,
         },
@@ -53,7 +56,7 @@ export function OutreachInbox() {
         setRefreshing(false);
       }
     }
-  }, [mailboxKey, offset, unreadOnly]);
+  }, [mailboxKey, offset, searchQuery, unreadOnly]);
 
   useEffect(() => {
     setLoading(true);
@@ -94,6 +97,12 @@ export function OutreachInbox() {
     setDetailLoading(false);
   }, []);
 
+  function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setOffset(0);
+    setSearchQuery(searchInput.trim());
+  }
+
   return (
     <div>
       <div
@@ -116,6 +125,41 @@ export function OutreachInbox() {
           </p>
         </div>
         <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+          <form
+            onSubmit={submitSearch}
+            role="search"
+            aria-label="Search all inbox mail"
+            style={{ display: "flex", gap: "0.4rem", alignItems: "end", flexWrap: "wrap" }}
+          >
+            <label style={{ display: "grid", gap: "0.25rem", fontSize: "0.85rem" }}>
+              <span>Global search</span>
+              <input
+                className="input"
+                type="search"
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
+                placeholder="Subject, sender, restaurant, message…"
+                maxLength={200}
+                style={{ minWidth: "260px" }}
+              />
+            </label>
+            <button className="btn btn-primary" type="submit" disabled={loading}>
+              Search
+            </button>
+            {searchQuery ? (
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => {
+                  setSearchInput("");
+                  setSearchQuery("");
+                  setOffset(0);
+                }}
+              >
+                Clear
+              </button>
+            ) : null}
+          </form>
           <label style={{ display: "grid", gap: "0.25rem", fontSize: "0.85rem" }}>
             <span>Receiving mailbox</span>
             <select
@@ -169,7 +213,13 @@ export function OutreachInbox() {
       )}
       {loading && !data ? <EmptyState message="Loading inbox…" /> : null}
       {!loading && !error && (data?.threads || []).length === 0 ? (
-        <EmptyState message="No inbox mail received in the last 10 days." />
+        <EmptyState
+          message={
+            searchQuery
+              ? `No inbox mail matches “${searchQuery}” in the last 10 days.`
+              : "No inbox mail received in the last 10 days."
+          }
+        />
       ) : null}
       {(data?.threads || []).length > 0 ? (
         <div className="table-wrap">

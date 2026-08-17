@@ -378,6 +378,11 @@ func (handler *OutreachBulkHandler) ListInbox(w http.ResponseWriter, r *http.Req
 		handler.writeError(w, http.StatusBadRequest, "invalid_request", "mailbox must be a single-line account key of at most 200 bytes.")
 		return
 	}
+	search := strings.TrimSpace(query.Get("q"))
+	if len(search) > 200 || strings.ContainsAny(search, "\r\n") {
+		handler.writeError(w, http.StatusBadRequest, "invalid_request", "q must be a single-line search term of at most 200 bytes.")
+		return
+	}
 	limit := 50
 	offset := 0
 	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
@@ -396,7 +401,7 @@ func (handler *OutreachBulkHandler) ListInbox(w http.ResponseWriter, r *http.Req
 		}
 		offset = parsed
 	}
-	result, err := handler.service.ListInbox(r.Context(), principal, unreadOnly, mailboxKey, limit, offset)
+	result, err := handler.service.ListInbox(r.Context(), principal, unreadOnly, mailboxKey, search, limit, offset)
 	if err != nil {
 		handler.writeInboxError(w, err)
 		return

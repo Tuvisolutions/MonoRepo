@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 :root {
+  --font-source-sans: "Avenir Next", Avenir, "Segoe UI", Arial, sans-serif;
+  --font-fraunces: Georgia, "Times New Roman", serif;
   --bg: #f4f6f5;
   --bg-elevated: #ffffff;
   --ink: #12201c;

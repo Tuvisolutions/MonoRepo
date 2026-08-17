@@ -29,6 +29,15 @@ tuvi-website/app/.next/
 .env.local
 .env.*.local
 **/.env.local
+**/.env
+!**/.env.example
+**/secrets/
+**/*service-account*.json
+**/google-service-account.json
+**/iowe-*.json
+*-firebase-adminsdk-*.json
+tuvi-website/iowe-*.json
+tuvi-website/backend/secrets/
 
 # Local artifacts
 tmp/
