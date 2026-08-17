@@ -12,4 +12,6 @@ dataset/images/*
 !dataset/images/.gitkeep
 dataset/labels/*
 !dataset/labels/.gitkeep
+dataset/sw_prod/
 exports/
+*.tgz

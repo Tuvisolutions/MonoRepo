@@ -29,14 +29,54 @@ python scripts/smoke_test.py examples/meter_panel_sample.png
 - `GET /health` — key configured?
 - `POST /analyze` — multipart field `file` (JPEG/PNG/WebP)
 
-## Fine-tune later
+## Train from Sustainability Wise prod photos
 
-See [`dataset/README.md`](dataset/README.md) and:
+Prod EcoAudit has ~3.8k electrical photos (`main_switchboard`, `additional_switchboard`, `solar_pv`, `general_electricity`) with metadata (`site_nmi`, captions, entity type).
+
+### One-shot pipeline (SSH to prod VM)
 
 ```bash
-python scripts/prepare_finetune_jsonl.py --out exports/finetune.jsonl
+source .venv/bin/activate
+chmod +x scripts/run_sw_train_pipeline.sh
+LIMIT=50 MODE=metadata ./scripts/run_sw_train_pipeline.sh
+```
+
+- `MODE=metadata` — fast weak labels from DB NMI / captions
+- `MODE=hybrid` — Gemini vision labels + DB NMI override (needs `GEMINI_API_KEY`)
+- `MODE=gemini` — Gemini-only labels
+
+### Manual steps
+
+```bash
+# 1) Pull images + manifest from prod
+python scripts/fetch_sw_electrical_photos.py --ssh-prod --limit 100 --prefer-nmi \
+  --fields photo electricityMeterPhoto switchboardPhoto \
+  --out dataset/sw_prod
+
+# 2) Build ElectricalAnalysis labels
+python scripts/build_labels_from_metadata.py \
+  --manifest dataset/sw_prod/manifest.jsonl \
+  --dataset dataset/sw_prod --mode hybrid --strip-source
+
+# 3) Train / export several backends
+python scripts/train_models.py --dataset dataset/sw_prod \
+  --backends gemini-jsonl,evaluate,gemini-tune,trocr \
+  --out-dir exports/train_runs
+```
+
+| Backend | What it does |
+|---------|----------------|
+| `gemini-jsonl` | Multimodal JSONL for Vertex / Gemini SFT |
+| `gemini-tune` | Attempts API tune job (often needs Vertex + GCS) |
+| `trocr` | Fine-tunes HuggingFace TrOCR on `raw_ocr_text` (`pip install torch transformers`) |
+| `evaluate` | Scores current `GEMINI_MODEL` NMI exact-match vs gold |
+
+Also:
+
+```bash
+python scripts/prepare_finetune_jsonl.py --dataset dataset/sw_prod --out exports/finetune.jsonl
 ```
 
 ## Security
 
-Never commit `.env`. If a key was pasted in chat, rotate it in Google AI Studio.
+Never commit `.env` or prod Spaces/DB credentials. If a key was pasted in chat, rotate it.

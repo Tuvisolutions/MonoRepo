@@ -177,15 +177,30 @@ func loadOutreachInboundAccount(parser *envParser, cfg *OutreachConfig) {
 	}
 	cfg.InboundMailboxes = append([]GmailMailConfig(nil), cfg.GoogleWorkspaceAccounts...)
 	if raw := strings.TrimSpace(cfg.InboundMailboxJSON); raw != "" {
-		account, ok := parseOutreachInboundMailboxJSON(parser, raw)
-		if !ok {
+		entries, err := parseInboundMailboxJSON(raw)
+		if err != nil {
+			parser.addError(err)
 			return
 		}
-		account, ok = addInboundPollingMailbox(parser, cfg, account)
-		if !ok {
-			return
+		var selected *GmailMailConfig
+		for index, entry := range entries {
+			account, accountErr := inboundAccountFromJSON(entry, index)
+			if accountErr != nil {
+				parser.addError(accountErr)
+				continue
+			}
+			account, ok := addInboundPollingMailbox(parser, cfg, account)
+			if !ok {
+				continue
+			}
+			if selected == nil {
+				copy := account
+				selected = &copy
+			}
 		}
-		assignInboundMailbox(parser, cfg, account)
+		if selected != nil {
+			assignInboundMailbox(parser, cfg, *selected)
+		}
 		return
 	}
 	if len(cfg.GoogleWorkspaceAccounts) == 0 {
@@ -210,28 +225,49 @@ func loadOutreachInboundAccount(parser *envParser, cfg *OutreachConfig) {
 	assignInboundMailbox(parser, cfg, selected)
 }
 
-func parseOutreachInboundMailboxJSON(parser *envParser, raw string) (GmailMailConfig, bool) {
+func parseInboundMailboxJSON(raw string) ([]outreachGoogleWorkspaceAccountJSON, error) {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "[") {
+		var entries []outreachGoogleWorkspaceAccountJSON
+		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+			return nil, fmt.Errorf("OUTREACH_INBOUND_MAILBOX_JSON must be a valid JSON object or array: %w", err)
+		}
+		if len(entries) == 0 {
+			return nil, fmt.Errorf("OUTREACH_INBOUND_MAILBOX_JSON array must contain at least one mailbox")
+		}
+		return entries, nil
+	}
+
 	var entry outreachGoogleWorkspaceAccountJSON
-	if err := json.Unmarshal([]byte(raw), &entry); err != nil {
-		parser.addError(fmt.Errorf("OUTREACH_INBOUND_MAILBOX_JSON must be a valid JSON object: %w", err))
-		return GmailMailConfig{}, false
+	if err := json.Unmarshal([]byte(trimmed), &entry); err != nil {
+		return nil, fmt.Errorf("OUTREACH_INBOUND_MAILBOX_JSON must be a valid JSON object or array: %w", err)
+	}
+	return []outreachGoogleWorkspaceAccountJSON{entry}, nil
+}
+
+func inboundAccountFromJSON(entry outreachGoogleWorkspaceAccountJSON, index int) (GmailMailConfig, error) {
+	prefix := "OUTREACH_INBOUND_MAILBOX_JSON"
+	if index >= 0 {
+		prefix = fmt.Sprintf("OUTREACH_INBOUND_MAILBOX_JSON entry %d", index+1)
 	}
 	mailboxEmail, err := canonicalOutreachMailbox(entry.MailboxEmail)
 	if err != nil {
-		parser.addError(fmt.Errorf("OUTREACH_INBOUND_MAILBOX_JSON mailbox_email: %w", err))
-		return GmailMailConfig{}, false
+		return GmailMailConfig{}, fmt.Errorf("%s mailbox_email: %w", prefix, err)
 	}
 	fromEmail := mailboxEmail
 	if strings.TrimSpace(entry.FromEmail) != "" {
 		fromEmail, err = canonicalOutreachMailbox(entry.FromEmail)
 		if err != nil {
-			parser.addError(fmt.Errorf("OUTREACH_INBOUND_MAILBOX_JSON from_email: %w", err))
-			return GmailMailConfig{}, false
+			return GmailMailConfig{}, fmt.Errorf("%s from_email: %w", prefix, err)
 		}
 	}
 	accountKey := strings.TrimSpace(entry.Key)
 	if accountKey == "" {
-		accountKey = "inbound"
+		if index <= 0 {
+			accountKey = "inbound"
+		} else {
+			accountKey = "inbound-" + mailboxEmail
+		}
 	}
 	account := GmailMailConfig{
 		AccountKey:   accountKey,
@@ -242,10 +278,9 @@ func parseOutreachInboundMailboxJSON(parser *envParser, raw string) (GmailMailCo
 		RefreshToken: strings.TrimSpace(entry.RefreshToken),
 	}
 	if account.ClientID == "" || account.ClientSecret == "" || account.RefreshToken == "" {
-		parser.addError(fmt.Errorf("OUTREACH_INBOUND_MAILBOX_JSON is missing required Google Workspace fields"))
-		return GmailMailConfig{}, false
+		return GmailMailConfig{}, fmt.Errorf("%s is missing required Google Workspace fields", prefix)
 	}
-	return account, true
+	return account, nil
 }
 
 func addInboundPollingMailbox(parser *envParser, cfg *OutreachConfig, account GmailMailConfig) (GmailMailConfig, bool) {

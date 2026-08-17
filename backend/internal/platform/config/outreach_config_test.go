@@ -135,6 +135,29 @@ func TestLoadOutreachInboundUsesSelectedSendingAccount(t *testing.T) {
 	}
 }
 
+func TestLoadOutreachInboundMailboxJSONArray(t *testing.T) {
+	t.Setenv("OUTREACH_INBOUND_ENABLED", "true")
+	t.Setenv("OUTREACH_INBOUND_MAILBOX_JSON", `[
+		{"key":"inbound","mailbox_email":"contact@tuvisolutions.com","client_id":"cid","client_secret":"sec","refresh_token":"rt"},
+		{"key":"inbound-operations","mailbox_email":"operations@tuvisolutions.com","client_id":"cid","client_secret":"sec","refresh_token":"rt2"},
+		{"key":"inbound-support","mailbox_email":"support@tuvisolutions.com","client_id":"cid","client_secret":"sec","refresh_token":"rt3"}
+	]`)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Outreach.InboundMailbox == nil || cfg.Outreach.InboundMailbox.MailboxEmail != "contact@tuvisolutions.com" {
+		t.Fatalf("InboundMailbox = %#v", cfg.Outreach.InboundMailbox)
+	}
+	if len(cfg.Outreach.InboundMailboxes) != 3 {
+		t.Fatalf("InboundMailboxes len = %d, want 3", len(cfg.Outreach.InboundMailboxes))
+	}
+	if cfg.Outreach.InboundMailboxes[1].MailboxEmail != "operations@tuvisolutions.com" || cfg.Outreach.InboundMailboxes[2].MailboxEmail != "support@tuvisolutions.com" {
+		t.Fatalf("InboundMailboxes = %#v", cfg.Outreach.InboundMailboxes)
+	}
+}
+
 func TestLoadOutreachInboundKeepsDedicatedMailboxAndPollsAllSendingAccounts(t *testing.T) {
 	t.Setenv("OUTREACH_INBOUND_ENABLED", "true")
 	t.Setenv("OUTREACH_GOOGLE_WORKSPACE_ACCOUNTS_JSON", `[
