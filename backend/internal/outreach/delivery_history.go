@@ -41,6 +41,10 @@ type DailyDeliverySender struct {
 	AccountKey  string                `json:"account_key"`
 	SenderEmail string                `json:"sender_email"`
 	Counts      DeliveryOutcomeCounts `json:"counts"`
+	Phase1Sent  int                   `json:"phase_1_sent"`
+	Phase2Sent  int                   `json:"phase_2_sent"`
+	Phase3Sent  int                   `json:"phase_3_sent"`
+	OtherSent   int                   `json:"other_sent"`
 }
 
 type DailyDelivery struct {
@@ -97,7 +101,19 @@ const dailyDeliverySendersQuery = `
 	       (count(attempt.id) FILTER (WHERE attempt.status = 'failed'))::int AS failed,
 	       (count(attempt.id) FILTER (WHERE attempt.status = 'unknown'))::int AS unknown,
 	       (count(attempt.id) FILTER (WHERE attempt.status = 'skipped'))::int AS skipped,
-	       (count(attempt.id) FILTER (WHERE attempt.status = 'sending'))::int AS sending
+	       (count(attempt.id) FILTER (WHERE attempt.status = 'sending'))::int AS sending,
+	       (count(attempt.id) FILTER (
+	         WHERE attempt.status = 'sent' AND attempt.campaign_step = 1
+	       ))::int AS phase_1_sent,
+	       (count(attempt.id) FILTER (
+	         WHERE attempt.status = 'sent' AND attempt.campaign_step = 2
+	       ))::int AS phase_2_sent,
+	       (count(attempt.id) FILTER (
+	         WHERE attempt.status = 'sent' AND attempt.campaign_step = 3
+	       ))::int AS phase_3_sent,
+	       (count(attempt.id) FILTER (
+	         WHERE attempt.status = 'sent' AND attempt.campaign_step NOT IN (1, 2, 3)
+	       ))::int AS other_sent
 	FROM outreach_email_accounts AS account
 	LEFT JOIN email_delivery_attempts AS attempt
 	  ON attempt.account_id = account.id
@@ -188,6 +204,10 @@ func (repo *Postgres) ListDailyDeliveries(
 			&sender.Counts.Unknown,
 			&sender.Counts.Skipped,
 			&sender.Counts.Sending,
+			&sender.Phase1Sent,
+			&sender.Phase2Sent,
+			&sender.Phase3Sent,
+			&sender.OtherSent,
 		); err != nil {
 			senderRows.Close()
 			return DailyDeliveryList{}, fmt.Errorf("scan daily outreach sender totals: %w", err)

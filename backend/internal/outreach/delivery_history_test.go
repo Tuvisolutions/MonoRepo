@@ -193,6 +193,10 @@ func TestDailyDeliveryQueriesUseLedgerDayAndSafeSnapshots(t *testing.T) {
 		"attempt.created_at >= $1",
 		"attempt.created_at < $2",
 		"FILTER (WHERE attempt.status = 'unknown')",
+		"attempt.status = 'sent' AND attempt.campaign_step = 1",
+		"attempt.status = 'sent' AND attempt.campaign_step = 2",
+		"attempt.status = 'sent' AND attempt.campaign_step = 3",
+		"attempt.status = 'sent' AND attempt.campaign_step NOT IN (1, 2, 3)",
 	} {
 		if !strings.Contains(dailyDeliverySendersQuery, required) {
 			t.Fatalf("daily sender query missing %q", required)

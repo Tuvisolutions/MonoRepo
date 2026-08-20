@@ -168,10 +168,12 @@ replacing an account does not enable the bulk email job.
 
 Use **Outreach → Send history** to inspect one `Australia/Sydney` calendar date.
 The summary shows the full-day attempt counts for every configured From address,
-and the detail list can be filtered by that stable sender account. Each row shows
-the attempt time, restaurant, immutable recipient address, sequence email/phase,
-stored outbound subject when available, controlled outcome, and provider message
-identifier when one was recorded.
+including sent totals split across Email 1, Email 2, Email 3, and legacy/later
+steps. Select **View recipients** for an email ID to filter the detail list by
+that stable sender account. Each row shows the attempt time, restaurant,
+immutable recipient address, sequence email/phase, stored outbound subject when
+available, controlled outcome, and provider message identifier when one was
+recorded.
 
 The screen is an attempt ledger, not an inbox-delivery report. `Sent` means the
 attempt is currently marked sent after provider acceptance; it does not prove

@@ -98,7 +98,7 @@ func TestListDeliveriesReturnsFilteredDailyLedger(t *testing.T) {
 		Summary: outreach.DeliveryOutcomeCounts{Total: 1, Sent: 1},
 		Senders: []outreach.DailyDeliverySender{{
 			AccountID: accountID, AccountKey: "contact", SenderEmail: "contact@tuvisolutions.com",
-			Counts: outreach.DeliveryOutcomeCounts{Total: 1, Sent: 1},
+			Counts: outreach.DeliveryOutcomeCounts{Total: 1, Sent: 1}, Phase2Sent: 1,
 		}},
 		Deliveries: []outreach.DailyDelivery{{
 			ID: attemptID, RestaurantID: restaurantID, RestaurantName: "Example Restaurant",
@@ -132,6 +132,10 @@ func TestListDeliveriesReturnsFilteredDailyLedger(t *testing.T) {
 	}
 	if body.Deliveries[0].RecipientEmail != "owner@example.com" || body.Deliveries[0].Outcome != "Provider accepted" {
 		t.Fatalf("delivery = %#v", body.Deliveries[0])
+	}
+	if len(body.Senders) != 1 || body.Senders[0].Phase1Sent != 0 || body.Senders[0].Phase2Sent != 1 ||
+		body.Senders[0].Phase3Sent != 0 || body.Senders[0].OtherSent != 0 {
+		t.Fatalf("sender phase counts = %#v", body.Senders)
 	}
 }
 
@@ -201,6 +205,10 @@ func TestDeliveryHistoryOpenAPIContract(t *testing.T) {
 		"enum: [sending, sent, skipped, failed, unknown]",
 		"timezone:",
 		"provider_message_id:",
+		"phase_1_sent:",
+		"phase_2_sent:",
+		"phase_3_sent:",
+		"other_sent:",
 	} {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("OpenAPI delivery history contract missing %q", required)

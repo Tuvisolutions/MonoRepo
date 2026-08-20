@@ -5371,7 +5371,7 @@ components:
 
     DailyOutreachDeliverySender:
       type: object
-      required: [account_id, account_key, sender_email, counts]
+      required: [account_id, account_key, sender_email, counts, phase_1_sent, phase_2_sent, phase_3_sent, other_sent]
       properties:
         account_id:
           type: string
@@ -5384,6 +5384,22 @@ components:
           description: Current effective From address for this ledger sender.
         counts:
           $ref: '#/components/schemas/OutreachDeliveryOutcomeCounts'
+        phase_1_sent:
+          type: integer
+          minimum: 0
+          description: Attempts for campaign step 1 currently marked sent after provider acceptance.
+        phase_2_sent:
+          type: integer
+          minimum: 0
+          description: Attempts for campaign step 2 currently marked sent after provider acceptance.
+        phase_3_sent:
+          type: integer
+          minimum: 0
+          description: Attempts for campaign step 3 currently marked sent after provider acceptance.
+        other_sent:
+          type: integer
+          minimum: 0
+          description: Attempts outside campaign steps 1, 2, and 3 currently marked sent after provider acceptance.
 
     DailyOutreachDelivery:
       type: object

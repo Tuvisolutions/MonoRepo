@@ -125,6 +125,10 @@ export type DailyOutreachDeliverySender = {
   account_key: string;
   sender_email: string;
   counts: OutreachDeliveryOutcomeCounts;
+  phase_1_sent: number;
+  phase_2_sent: number;
+  phase_3_sent: number;
+  other_sent: number;
 };
 
 export type DailyOutreachDelivery = {

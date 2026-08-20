@@ -173,10 +173,13 @@ export function OutreachDeliveryHistory() {
             lineHeight: 1.5,
           }}
         >
-          Review one Australia/Sydney calendar date by From address. Marked sent
-          means provider acceptance, not inbox delivery. Later bounces appear as
-          failures only when separately recorded or reconciled. Template tests,
-          inbox replies, and health checks are excluded.
+          Review one Australia/Sydney calendar date by sending email ID. For
+          each ID, view how many Email 1, Email 2, and Email 3 messages were
+          marked sent, then open its recipients to see whom each attempt was
+          addressed to and how it went. Marked sent means provider acceptance,
+          not inbox delivery. Later bounces appear as failures only when
+          separately recorded or reconciled. Template tests, inbox replies, and
+          health checks are excluded.
         </p>
       </div>
 
@@ -199,7 +202,7 @@ export function OutreachDeliveryHistory() {
           />
         </label>
         <label className="field-label" htmlFor="delivery-history-sender">
-          Sender address
+          Email ID
           <select
             id="delivery-history-sender"
             className="select"
@@ -210,7 +213,7 @@ export function OutreachDeliveryHistory() {
               clearForFilterChange();
             }}
           >
-            <option value="">All sender addresses</option>
+            <option value="">All email IDs</option>
             {senderOptions.map((sender) => (
               <option value={sender.account_id} key={sender.account_id}>
                 {sender.sender_email || sender.account_key}
@@ -247,12 +250,13 @@ export function OutreachDeliveryHistory() {
               <div className="delivery-history-heading">
                 <div>
                   <h3 style={{ margin: 0, fontSize: "1rem" }}>
-                    Per From address
+                    Sending email IDs
                   </h3>
                   <p className="field-help" style={{ margin: "0.25rem 0 0" }}>
                     Counts cover the complete Sydney date, not only the current
-                    page. Configured addresses with no attempts are shown as
-                    zero.
+                    page. Select View recipients to see whom each email ID
+                    attempted to contact and how every attempt went. Configured
+                    IDs with no attempts are shown as zero.
                   </p>
                 </div>
                 {accountID ? (
@@ -265,24 +269,25 @@ export function OutreachDeliveryHistory() {
                       clearForFilterChange();
                     }}
                   >
-                    Show all senders
+                    Show all email IDs
                   </button>
                 ) : null}
               </div>
               {data.senders.length === 0 ? (
-                <EmptyState message="No scheduled sender addresses are configured." />
+                <EmptyState message="No scheduled sending email IDs are configured." />
               ) : (
                 <div className="table-wrap" style={{ marginTop: "0.85rem" }}>
                   <table className="data delivery-sender-table">
                     <thead>
                       <tr>
-                        <th>From address</th>
-                        <th>Attempts</th>
-                        <th>Sent</th>
-                        <th>Failed</th>
-                        <th>Unknown</th>
-                        <th>Skipped</th>
-                        <th>In progress</th>
+                        <th scope="col">Email ID</th>
+                        <th scope="col">Attempts</th>
+                        <th scope="col">Sent total</th>
+                        <th scope="col">Email 1 sent</th>
+                        <th scope="col">Email 2 sent</th>
+                        <th scope="col">Email 3 sent</th>
+                        <th scope="col">Other outcomes</th>
+                        <th scope="col">Recipients</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -291,36 +296,76 @@ export function OutreachDeliveryHistory() {
                           key={sender.account_id}
                           data-selected={sender.account_id === accountID}
                         >
-                          <td data-label="From address">
+                          <td data-label="Email ID">
                             <div className="delivery-cell-content">
-                              <button
-                                className="delivery-sender-filter"
-                                type="button"
-                                aria-pressed={sender.account_id === accountID}
-                                onClick={() => {
-                                  const nextAccountID =
-                                    sender.account_id === accountID
-                                      ? ""
-                                      : sender.account_id;
-                                  setAccountID(nextAccountID);
-                                  setOffset(0);
-                                  clearForFilterChange();
-                                }}
-                              >
+                              <strong className="delivery-break-anywhere">
                                 {sender.sender_email || sender.account_key}
-                              </button>
+                              </strong>
                               <div className="field-help">
                                 {sender.account_key}
                               </div>
                             </div>
                           </td>
                           <td data-label="Attempts">{sender.counts.total}</td>
-                          <td data-label="Sent">{sender.counts.sent}</td>
-                          <td data-label="Failed">{sender.counts.failed}</td>
-                          <td data-label="Unknown">{sender.counts.unknown}</td>
-                          <td data-label="Skipped">{sender.counts.skipped}</td>
-                          <td data-label="In progress">
-                            {sender.counts.sending}
+                          <td data-label="Sent total">
+                            <div className="delivery-cell-content">
+                              <strong>{sender.counts.sent}</strong>
+                              {sender.other_sent > 0 ? (
+                                <div className="field-help">
+                                  Includes {sender.other_sent} other or legacy
+                                </div>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td data-label="Email 1 sent">
+                            {sender.phase_1_sent}
+                          </td>
+                          <td data-label="Email 2 sent">
+                            {sender.phase_2_sent}
+                          </td>
+                          <td data-label="Email 3 sent">
+                            {sender.phase_3_sent}
+                          </td>
+                          <td data-label="Other outcomes">
+                            <div className="delivery-sender-outcomes">
+                              <span>
+                                Failed <strong>{sender.counts.failed}</strong>
+                              </span>
+                              <span>
+                                Unknown <strong>{sender.counts.unknown}</strong>
+                              </span>
+                              <span>
+                                Skipped <strong>{sender.counts.skipped}</strong>
+                              </span>
+                              <span>
+                                In progress{" "}
+                                <strong>{sender.counts.sending}</strong>
+                              </span>
+                            </div>
+                          </td>
+                          <td data-label="Recipients">
+                            {sender.account_id === accountID ? (
+                              <span
+                                className="delivery-sender-viewing"
+                                aria-live="polite"
+                              >
+                                Viewing recipients
+                              </span>
+                            ) : (
+                              <button
+                                className="btn btn-secondary btn-compact"
+                                type="button"
+                                aria-controls="delivery-recipient-list"
+                                aria-label={`View recipients for ${sender.sender_email || sender.account_key}`}
+                                onClick={() => {
+                                  setAccountID(sender.account_id);
+                                  setOffset(0);
+                                  clearForFilterChange();
+                                }}
+                              >
+                                View recipients
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -330,41 +375,48 @@ export function OutreachDeliveryHistory() {
               )}
             </div>
 
-            <div
-              className="card delivery-history-heading"
-              style={{ marginBottom: "0.75rem" }}
+            <section
+              id="delivery-recipient-list"
+              aria-labelledby="delivery-recipient-list-heading"
             >
-              <div>
-                <h3 style={{ margin: 0, fontSize: "1rem" }}>
-                  {selectedSender
-                    ? selectedSender.sender_email || selectedSender.account_key
-                    : "All scheduled attempts"}
-                </h3>
-                <p
-                  className="field-help"
-                  style={{ margin: "0.25rem 0 0" }}
-                  aria-live="polite"
-                >
-                  {pageStart}–{pageEnd} of {data.total} for {data.date} ·{" "}
-                  {data.timezone}
-                </p>
+              <div
+                className="card delivery-history-heading"
+                style={{ marginBottom: "0.75rem" }}
+              >
+                <div>
+                  <h3
+                    id="delivery-recipient-list-heading"
+                    style={{ margin: 0, fontSize: "1rem" }}
+                  >
+                    {selectedSender
+                      ? `Recipients and outcomes for ${selectedSender.sender_email || selectedSender.account_key}`
+                      : "Recipients across all email IDs"}
+                  </h3>
+                  <p
+                    className="field-help"
+                    style={{ margin: "0.25rem 0 0" }}
+                    aria-live="polite"
+                  >
+                    {pageStart}–{pageEnd} of {data.total} for {data.date} ·{" "}
+                    {data.timezone}
+                  </p>
+                </div>
               </div>
-            </div>
 
-            {!loading && !error && data.deliveries.length === 0 ? (
-              <EmptyState message="No scheduled outreach attempts match this date and sender." />
-            ) : null}
+              {!loading && !error && data.deliveries.length === 0 ? (
+                <EmptyState message="No scheduled outreach attempts match this date and email ID." />
+              ) : null}
 
-            {data.deliveries.length > 0 ? (
-              <div className="table-wrap">
-                <table className="data delivery-history-table">
+              {data.deliveries.length > 0 ? (
+                <div className="table-wrap">
+                  <table className="data delivery-history-table">
                   <thead>
                     <tr>
-                      <th>Sydney time</th>
-                      <th>From address</th>
-                      <th>Restaurant / recipient</th>
-                      <th>Email / subject</th>
-                      <th>Outcome</th>
+                      <th scope="col">Sydney time</th>
+                      <th scope="col">Email ID</th>
+                      <th scope="col">Restaurant / recipient</th>
+                      <th scope="col">Email / subject</th>
+                      <th scope="col">Outcome</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -384,7 +436,7 @@ export function OutreachDeliveryHistory() {
                           </div>
                         </td>
                         <td
-                          data-label="From address"
+                          data-label="Email ID"
                           className="delivery-wrap-cell"
                         >
                           <div className="delivery-cell-content">
@@ -449,40 +501,41 @@ export function OutreachDeliveryHistory() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
-              </div>
-            ) : null}
+                  </table>
+                </div>
+              ) : null}
 
-            <div className="delivery-history-pagination">
-              <button
-                className="btn btn-secondary"
-                type="button"
-                onClick={load}
-                disabled={loading}
-              >
-                {loading ? "Refreshing…" : "Refresh"}
-              </button>
-              <div style={{ display: "flex", gap: "0.5rem" }}>
+              <div className="delivery-history-pagination">
                 <button
                   className="btn btn-secondary"
                   type="button"
-                  onClick={() => changePage(Math.max(0, offset - PAGE_SIZE))}
-                  disabled={offset === 0 || loading}
+                  onClick={load}
+                  disabled={loading}
                 >
-                  Previous
+                  {loading ? "Refreshing…" : "Refresh"}
                 </button>
-                <button
-                  className="btn btn-secondary"
-                  type="button"
-                  onClick={() => changePage(offset + PAGE_SIZE)}
-                  disabled={
-                    offset + data.deliveries.length >= data.total || loading
-                  }
-                >
-                  Next
-                </button>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={() => changePage(Math.max(0, offset - PAGE_SIZE))}
+                    disabled={offset === 0 || loading}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={() => changePage(offset + PAGE_SIZE)}
+                    disabled={
+                      offset + data.deliveries.length >= data.total || loading
+                    }
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
-            </div>
+            </section>
           </>
         ) : null}
       </div>
