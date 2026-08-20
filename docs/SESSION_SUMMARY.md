@@ -1,5 +1,5 @@
-Production remains on release `8c34503` at schema 54; Phase 2/3 automated outreach remains temporarily paused.
-Unreleased work applies the active approved signature, adds the internal-admin daily Send history, and schedules bounded next-Sydney-window recovery for definitive pre-acceptance outreach failures without resetting restaurant or mailbox history.
-Only controlled Gmail rate-limit, pre-send token, and credential failures retry the exact step; the cap is three attempts, later holds remain intact, and unknown, accepted, or non-allowlisted/bounced outcomes stay paused.
-Backend tests (668), targeted race tests (216), four real-PostgreSQL transaction cases, vet/build, OpenAPI, repository context, independent review, and diff checks pass.
-No deployment, migration, production mutation, provider call, or real email was performed; API/worker rollout still requires explicit approval.
+Production runs release `82f366f` at schema 54; API, worker, and admin are healthy, while `email_job` is disabled and Phase 2/3 remain parked until August 2027.
+Outreach → Send history now lists each sending email ID with daily attempts, Email 1/2/3 sent totals, other outcomes, and recipient/subject/provider drill-down.
+Scheduled sends and inbox replies use the active saved signature, including its phone/address details, while message copy remains pinned to its approved sequence version.
+Definitive Gmail rate-limit, pre-send, and credential failures now retry the exact step at a later Sydney window with a three-attempt cap; unknown and accepted-then-bounced outcomes remain paused.
+The rollout created no delivery attempt, outbound message, provider health action, or schema change; re-enabling Phase 1 outreach requires a separate explicit administrator action.

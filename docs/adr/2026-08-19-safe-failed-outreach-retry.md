@@ -1,7 +1,7 @@
 # ADR: Bounded next-day retry for definitively rejected outreach
 
 Date: 2026-08-19
-Status: Accepted (local/unreleased; not deployed)
+Status: Accepted (deployed in release `82f366f` on 2026-08-20)
 
 Supersedes the Gmail 403 classification portion of the
 [Gmail outreach and health ADR](2026-07-18-gmail-outreach-and-health.md). The
@@ -153,10 +153,10 @@ ledger even if a later reconciliation adds a bounce outcome.
 - Unknown, accepted, and non-allowlisted failures can require manual
   reconciliation; skipped outcomes remain outside this decision. Duplicate
   prevention takes precedence over queue volume.
-- The local implementation uses the existing campaign, attempt, event, schedule,
-  quota, and health schema. It adds no migration. Production behavior remains
-  unchanged until an explicitly approved application deployment; deployment
-  does not authorize or enable a real outreach send.
+- The deployed implementation uses the existing campaign, attempt, event,
+  schedule, quota, and health schema. Release `82f366f` added no migration and
+  left production on schema 54 with `email_job` disabled. A deployment does not
+  authorize or enable a real outreach send.
 
 ## Deployment and Monitoring
 

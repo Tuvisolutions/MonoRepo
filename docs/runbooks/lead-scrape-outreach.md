@@ -66,14 +66,13 @@ need explicit admin approval before public use.
   selection and rechecked immediately before delivery. The Restaurants admin
   page lists every shared-email group and its restaurant records.
 - A failure or unknown provider result never advances the integer step.
-- The local/unreleased safe-retry policy admits only a definitive
+- The deployed safe-retry policy admits only a definitive
   `gmail_rate_limit_rejected`, `gmail_pre_send_unavailable`, or
   `credential_or_authorization_rejected` failure. It preserves that exact
   campaign step and schedules it no earlier than the next saved
   `Australia/Sydney` send window, preserving any later campaign hold, with at
-  most three total attempts for the campaign step. This policy
-  is not deployed until the matching application release is explicitly
-  approved.
+  most three total attempts for the campaign step. Release `82f366f`
+  deployed this policy without enabling `email_job`.
 - Unknown, sent, sending, and non-allowlisted failures never enter this
   automatic retry path. Skipped outcomes are not admitted to the new
   definitive-failure scheduler or its cap; established skip handling remains
@@ -139,7 +138,7 @@ claims with the dedicated health quarantine.
 
 Gmail 429, and Gmail 403 responses whose structured reason is
 `userRateLimitExceeded`, `rateLimitExceeded`, or `dailyLimitExceeded`, are
-separate definitive pre-acceptance rejections. The local/unreleased recovery
+separate definitive pre-acceptance rejections. The deployed recovery
 policy records `gmail_rate_limit_rejected` and cools that quota account until the
 next Sydney window; it does not mark valid credentials unhealthy. A transient
 OAuth token failure before the Gmail message endpoint is called records
@@ -188,10 +187,10 @@ included in this screen.
 
 ## Recover definitively rejected scheduled sends
 
-> **Local/unreleased:** This automatic recovery policy is accepted in the
-> [safe failed-outreach retry ADR](../adr/2026-08-19-safe-failed-outreach-retry.md)
-> but does not change production until the matching API and worker build is
-> explicitly approved and deployed.
+> **Deployed in release `82f366f`:** This automatic recovery policy is defined
+> by the [safe failed-outreach retry ADR](../adr/2026-08-19-safe-failed-outreach-retry.md).
+> The rollout left `email_job` disabled; enabling real outreach remains a
+> separate explicit administrator action.
 
 Do not reset a restaurant's contact/email fields and do not refund or reset an
 email account's usage, cycle, or ramp counters. Those values preserve confirmed
@@ -277,8 +276,8 @@ lease ages into `unknown`, a failure code is outside the allowlist, or the cap i
 exhausted. Never infer a retry from a message missing in Gmail Sent. A message
 accepted by Gmail and later bounced requires an authenticated structured DSN or
 authoritative provider event that correlates to exactly one immutable attempt;
-free-form bounce text and mailbox visibility are insufficient. The current
-unreleased recovery path does not auto-retry accepted-then-bounced messages.
+free-form bounce text and mailbox visibility are insufficient. The deployed
+recovery path does not auto-retry accepted-then-bounced messages.
 
 ## Unified inbox across configured sending mailboxes
 

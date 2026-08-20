@@ -4272,3 +4272,79 @@ an authenticated, exactly correlated bounce workflow is approved. No production
 file, row, control, Gmail/provider state, or real email changed. Production
 remains on `8c34503`/schema 54; deploy API and worker together with outreach
 disabled, and enable sending only under separate explicit approval.
+
+## 2026-08-20 — Sender-first outreach history, signature, and safe recovery deployed
+
+**Role / Delivery:** Merged PR #6 to canonical `master` as
+`82f366fef183440b74207cddcd3c5fa3eb54bf35` and deployed the API, worker, and
+internal admin from one immutable release. The Send history screen now starts
+with every configured sending email ID, shows its full Sydney-day attempt and
+sent totals split across Email 1, Email 2, Email 3, and legacy/later steps, and
+provides an explicit **View recipients** drill-down. Each attempt shows the
+restaurant, immutable recipient address, exact historical From snapshot when
+available, subject, sequence email, timestamps, controlled outcome/error, and
+provider message ID without exposing bodies, credentials, or raw provider
+responses.
+
+The same release applies the current active approved signature to future
+scheduled sends and inbox replies while keeping campaign copy pinned to its
+approved sequence version. It also activates bounded next-Sydney-window recovery
+only for definitive Gmail rate-limit, pre-send, and credential rejections. The
+exact campaign step and all restaurant/mailbox history are retained, each retry
+uses a new normal quota slot, and the inclusive cap is three attempts. Unknown,
+accepted, and non-allowlisted outcomes remain fail-closed; in particular, the
+known accepted-then-rate-limit-bounced rows are not automatically resent.
+
+**Checks Run:** The final tree passed 668 backend tests across 46 packages, 216
+targeted race tests, Go vet and all backend command builds, admin ESLint,
+nonincremental TypeScript, the 14-route Next.js 16.3 production build, OpenAPI
+validation, repository-context checks, and diff checks. OpenAPI retained the
+same 11 pre-existing warnings. Four isolated real-PostgreSQL transaction cases
+had already covered recovery, cap exhaustion, later-hold preservation, and
+pre-quota rejection of ambiguous/bounced history. The additive sender phase
+aggregate query was also executed read-only against schema 54 and reconciled its
+sent total across all six durable sender accounts. Independent frontend,
+backend, contract, recovery, and final release reviews found no blocker.
+
+**Production Deployment:** The approved deployment first backed up the database
+and protected environment files, stopped the old worker, disabled `email_job`,
+and cancelled its future queued bulk row before the next Sydney send window.
+Only unused Docker build cache was removed (4.591 GB, fully regenerable); no
+image, container, volume, release, or backup was deleted. API, admin, and worker
+were then built from merge archive SHA-256
+`57da03f334fd1aacc598680fe0b819e220359601b3a9d8d911a1bdd354a745f2`
+and promoted one service at a time with immutable tags and `--no-deps`.
+Production source is
+`/opt/tuvi/releases/monorepo-82f366f-sender-history-20260820T194700Z`.
+
+API and worker use image
+`sha256:65ba557b178bd6df680e05312228af1ba2f7bf451940c76268ae09d66cdeb8ed`;
+admin uses
+`sha256:547025053f3cb2fa70e45f3047af9968db1b266123c17b102fd6ee2e8c880813`.
+All three report the merge revision, run with zero restarts, and have clean
+fatal-log boundaries. Public restaurant reads return 200, protected health
+returns 401 without authentication, the admin login returns 200, and anonymous
+admin outreach access redirects to login. Schema remained exactly 54; no
+migration container or unrelated service was run.
+
+**Safety / Approval State:** The post-deploy ledger remains 99 attempts: 93
+sent, 6 failed, 0 sending, and 0 unknown. No new delivery attempt or outbound
+message snapshot appeared during the rollout, all six sender health rows remain
+healthy, and no provider health/test/send action was invoked. The 53 approved
+Phase 2 and 12 approved Phase 3 campaigns remain parked on August 20, 2027.
+`email_job` remains disabled with zero active bulk jobs, so Phase 1 is also
+paused until a separate explicit administrator enablement. Validated mode-0600
+backups are
+`/opt/tuvi/backups/postgres/monorepo-pre-sender-history-20260820T193800Z.dump`
+and
+`/opt/tuvi/backups/config/env-pre-sender-history-20260820T193800Z.tar.gz`.
+Rollback tags and the prior source release
+`/opt/tuvi/releases/monorepo-8c34503-gmail-inbox-20260817T161057Z` remain
+available; rollback needs no migration down or database restore and must keep
+`email_job` disabled.
+
+**Business Value / Plan Fit:** An operator can now answer, for any Sydney day,
+which sender identity was used, how many messages of each sequence email were
+marked sent, whom every attempt targeted, and how it ended. Future messages also
+carry the saved contact signature, while safely rejected requests can recover
+without corrupting audit history or risking retries of ambiguous/accepted mail.
