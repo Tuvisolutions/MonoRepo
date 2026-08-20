@@ -371,6 +371,38 @@ func (pool *AccountPool) sendDurable(ctx context.Context, req SendRequest) (Send
 	result.Skipped = providerResult.Skipped
 
 	if sendErr != nil {
+		if errors.Is(sendErr, ErrRetryableRejection) {
+			failureCode := RetryableRejectionErrorCode(sendErr)
+			if failureCode == "" {
+				finalizeErr := pool.markUnknown(ctx, claim, "provider_send_unknown")
+				if finalizeErr != nil {
+					return result, fmt.Errorf("retryable provider rejection is missing a safe code; record unknown delivery: %w", finalizeErr)
+				}
+				result.Finalized = true
+				return result, fmt.Errorf("retryable provider rejection is missing a safe code")
+			}
+			failureStore, ok := pool.quota.(AccountFailureStore)
+			if !ok {
+				finalizeErr := pool.markUnknown(ctx, claim, "provider_send_unknown")
+				if finalizeErr != nil {
+					return result, fmt.Errorf("durable retryable rejection handling is not configured; record unknown delivery: %w", finalizeErr)
+				}
+				result.Finalized = true
+				return result, fmt.Errorf("durable retryable rejection handling is not configured")
+			}
+			finalizeCtx, cancel := durableFinalizeContext(ctx)
+			defer cancel()
+			if failErr := failureStore.FailEmailDelivery(finalizeCtx, claim, failureCode); failErr != nil {
+				unknownErr := pool.markUnknown(ctx, claim, "delivery_failure_finalization_unknown")
+				if unknownErr != nil {
+					return result, fmt.Errorf("record retryable provider rejection: %v; record unknown delivery: %w", failErr, unknownErr)
+				}
+				result.Finalized = true
+				return result, fmt.Errorf("record retryable provider rejection: %w", failErr)
+			}
+			result.Finalized = true
+			return result, sendErr
+		}
 		accountFailureStoreUnavailable := false
 		if errors.Is(sendErr, ErrAccountUnavailable) {
 			if failureStore, ok := pool.quota.(AccountFailureStore); ok {

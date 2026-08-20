@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { OutreachInbox } from "@/components/OutreachInbox";
+import { OutreachDeliveryHistory } from "@/components/OutreachDeliveryHistory";
 import { OutreachEmailAccounts } from "@/components/OutreachEmailAccounts";
 import { OutreachRecipients } from "@/components/OutreachRecipients";
 import { OutreachSequenceEditor } from "@/components/OutreachSequenceEditor";
@@ -20,7 +21,7 @@ import type {
   Restaurant,
 } from "@/lib/types";
 
-type View = "sequence" | "recipients" | "operations" | "accounts" | "inbox";
+type View = "sequence" | "recipients" | "deliveries" | "operations" | "accounts" | "inbox";
 
 export default function OutreachPage() {
   const [view, setView] = useState<View>("sequence");
@@ -227,6 +228,7 @@ export default function OutreachPage() {
   const tabs: { id: View; label: string }[] = [
     { id: "sequence", label: "Email sequence" },
     { id: "recipients", label: "Recipient progress" },
+    { id: "deliveries", label: "Send history" },
     { id: "operations", label: "Sending & health" },
     { id: "accounts", label: "Email accounts" },
     { id: "inbox", label: "Inbox" },
@@ -253,7 +255,9 @@ export default function OutreachPage() {
         }
       />
 
-      <ErrorBanner message={view === "sequence" ? sequenceError : operationsError} />
+      <ErrorBanner
+        message={view === "sequence" ? sequenceError : view === "operations" ? operationsError : null}
+      />
       {message ? (
         <div className="alert alert-info" style={{ marginBottom: "1rem" }} role="status" aria-live="polite">
           {message}
@@ -292,6 +296,12 @@ export default function OutreachPage() {
       {view === "recipients" ? (
         <div role="tabpanel" id="outreach-panel-recipients" aria-labelledby="outreach-tab-recipients">
           <OutreachRecipients />
+        </div>
+      ) : null}
+
+      {view === "deliveries" ? (
+        <div role="tabpanel" id="outreach-panel-deliveries" aria-labelledby="outreach-tab-deliveries">
+          <OutreachDeliveryHistory />
         </div>
       ) : null}
 

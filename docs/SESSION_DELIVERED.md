@@ -4143,3 +4143,132 @@ Validated mode-`0600` backups are
 rollback tags retain the prior `13a0a47` API/admin and `4d6ea73` worker images;
 the release-local rollback override recreates only the affected service and
 requires no database restore or migration down.
+
+## 2026-08-19 — Active outreach signature propagation fix prepared
+
+**Role / Delivery:** A read-only production ledger audit proved that Gmail was
+not stripping the saved phone/address details. All 32 recent messages from the
+current active sequence contained its full saved signature, while 14 recent
+follow-ups pinned to older archived sequence versions used those versions'
+empty details. Inbox replies also fell back to the provider's default
+name/title-only signature.
+
+The unreleased backend fix preserves each campaign's pinned subject/body copy
+but resolves the signature from the current active approved sequence immediately
+before scheduled delivery. Inbox replies now use the same active signature.
+Both paths fail closed before artifact preparation or provider delivery if the
+active signature is unavailable. Explicit selected-version previews and test
+sends retain that selected version's saved signature. No migration, API shape,
+frontend, or provider-adapter change is required.
+
+**Checks Run:** Targeted outreach/provider tests passed 164 tests, including
+pinned-campaign, selected-draft, signed-reply, and lookup-failure regressions.
+The full backend passed 612 tests across 46 packages; targeted race tests passed
+164 tests. Go vet, all backend command builds, repository context checks,
+OpenAPI validation, and diff checks passed. OpenAPI retained 11 pre-existing
+warnings.
+
+**Business Value / Plan Fit:** Updating the approved sender signature now
+changes the next automated outreach message and manual inbox reply, including a
+follow-up whose copy remains intentionally pinned to an earlier version. The
+saved contact details no longer depend on when the recipient entered the
+sequence.
+
+**Risks / Approval State:** This is local and unreleased. No production file,
+database row, runtime control, Gmail message, health probe, or provider state was
+changed while diagnosing or validating it. Production remains on release
+`8c34503` at schema 54. Phase 2/3 automation remains separately paused; rollout
+requires explicit production deployment approval and must not send a real test
+email.
+
+## 2026-08-19 — Daily per-sender outreach history prepared
+
+**Role / Delivery:** Added an internal-admin **Outreach → Send history** screen
+and `GET /api/v1/outreach/deliveries` contract for one Australia/Sydney calendar
+date. The screen shows complete-day counts per configured From address plus a
+paginated attempt list with Sydney time, restaurant, immutable recipient,
+sequence email/phase, exact stored outbound subject when available, controlled
+outcome, safe error code, and provider message identifier. Date and sender
+filters, current-day refresh, loading/error/empty states, and responsive mobile
+cards are included.
+
+The API reads `email_delivery_attempts` and the linked outbound message snapshot
+inside one read-only repeatable-read transaction so summaries and rows describe
+the same active-send snapshot. It includes sent, failed, unknown, skipped, and
+in-progress outcomes, uses start-inclusive/end-exclusive Sydney date bounds
+across DST, and never returns message bodies, raw provider errors, credentials,
+tokens, or opaque non-Gmail provider identities. `Sent` is explicitly described
+as the attempt's current provider-acceptance state, not inbox delivery; a later
+bounce appears as failed only after separate reconciliation records it. Template
+tests, inbox replies, health checks, and other direct messages remain outside the
+scheduled-attempt ledger.
+
+**Checks Run:** The full backend passed 632 tests across 46 packages; targeted
+race tests passed 181 tests. Go vet and all backend command builds passed. Admin
+ESLint, nonincremental TypeScript, and the 14-route Next.js 16.3 production build
+passed. OpenAPI validation passed with the same 11 pre-existing warnings;
+repository context and diff checks passed. Three independent backend, frontend,
+and contract reviews found no remaining blocker. No disposable PostgreSQL was
+available locally, so query syntax and contracts were reviewed and unit-tested
+but the new SELECTs were not executed against a real database.
+
+**Business Value / Plan Fit:** An operator can now answer which restaurants were
+attempted from each visible From address on a chosen Sydney date, how each
+attempt ended, and which Gmail/provider identifier supports a Sent-folder
+comparison without relying on ambiguous lifetime counters.
+
+**Risks / Approval State:** This API/admin feature is local and unreleased. It
+adds no migration and performs no send, reconciliation, or provider action. No
+production file, database row, job control, or Gmail state changed during this
+work. Production remains on release `8c34503` at schema 54, and Phase 2/3
+automation remains separately paused. Deployment still requires explicit
+approval; no real-email test is part of rollout verification.
+
+## 2026-08-19 — Bounded recovery for definitive outreach failures prepared
+
+**Role / Delivery:** Replaced the proposed restaurant-field reset with a
+campaign-step recovery policy that preserves delivery and quota history. Gmail
+429 and structured rate-limit 403 responses now record
+`gmail_rate_limit_rejected`; transient OAuth/token-stage failures before the
+message endpoint record `gmail_pre_send_unavailable`; credential/authorization
+rejections retain their dedicated account quarantine. These three controlled
+pre-acceptance outcomes schedule the exact failed campaign step no earlier than
+the next saved Australia/Sydney window, preserve any later Phase 2/3 hold, cool
+the selected account without refunding quota, and stop after three total
+non-skipped attempts with `delivery_retry_exhausted`.
+
+Unknown, sent, sending, and non-allowlisted failures are excluded before quota
+or provider access. This includes historical `gmail_sender_rate_limit_bounce`
+rows, because API acceptance followed by a bounce requires authoritative DSN
+reconciliation rather than an inferred resend. The eligible list/count,
+next-due calculation, recipient aggregates, and recipient-progress holds all
+share these guards. Finalization records retry audit metadata and makes the
+exact running one-attempt bulk job crash-reclaimable without changing its live
+status, owner, payload, availability, or lease; normal deferral remains
+owner-fenced.
+
+**Checks Run:** The full backend passed 668 tests across 46 packages and the
+targeted outreach/provider/jobs race suite passed 216 tests. Go vet, every
+backend command build, repository context checks, OpenAPI validation, gofmt,
+and diff checks passed; OpenAPI retained 11 pre-existing warnings. Four
+environment-gated transaction scenarios passed against an isolated disposable
+PostgreSQL schema-54 database: scheduled recovery plus fenced deferral,
+inclusive exhaustion, later follow-up hold/audit preservation, and pre-quota
+rejection of both unknown and accepted-then-rate-limit-bounced history. The
+host's PostgreSQL 14 required temporary compatibility edits to two unrelated
+PG15 column-specific scrape foreign-key clauses while constructing that test
+database; no repository migration was changed.
+
+**Business Value / Plan Fit:** Recoverable provider failures return to the
+normal, paced sender pool on a later Sydney send day without corrupting
+restaurant contact history, mailbox warm-up, quotas, campaign phase, or the
+daily delivery ledger. Operators see unsafe/exhausted states as paused instead
+of watching them spin or silently duplicate.
+
+**Risks / Approval State:** This policy is local and unreleased, adds no schema
+migration, and does not automatically reconcile accepted-then-bounced mail.
+The known contact bounce rows therefore remain paused under this release until
+an authenticated, exactly correlated bounce workflow is approved. No production
+file, row, control, Gmail/provider state, or real email changed. Production
+remains on `8c34503`/schema 54; deploy API and worker together with outreach
+disabled, and enable sending only under separate explicit approval.

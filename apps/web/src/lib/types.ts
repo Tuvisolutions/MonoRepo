@@ -111,6 +111,56 @@ export type BulkSendStatus = {
   send_schedule: OutreachSendSchedule;
 };
 
+export type OutreachDeliveryOutcomeCounts = {
+  total: number;
+  sent: number;
+  failed: number;
+  unknown: number;
+  skipped: number;
+  sending: number;
+};
+
+export type DailyOutreachDeliverySender = {
+  account_id: string;
+  account_key: string;
+  sender_email: string;
+  counts: OutreachDeliveryOutcomeCounts;
+  phase_1_sent: number;
+  phase_2_sent: number;
+  phase_3_sent: number;
+  other_sent: number;
+};
+
+export type DailyOutreachDelivery = {
+  id: string;
+  restaurant_id: string;
+  restaurant_name: string;
+  recipient_email: string;
+  account_id: string;
+  account_key: string;
+  sender_email: string;
+  campaign_step: number;
+  status: "sending" | "sent" | "skipped" | "failed" | "unknown";
+  outcome: string;
+  error_code?: string;
+  subject?: string;
+  provider_message_id?: string;
+  attempted_at: string;
+  outcome_at?: string;
+  sent_at?: string;
+};
+
+export type DailyOutreachDeliveryList = {
+  date: string;
+  timezone: "Australia/Sydney";
+  summary: OutreachDeliveryOutcomeCounts;
+  senders: DailyOutreachDeliverySender[];
+  deliveries: DailyOutreachDelivery[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export type OutreachSendSchedule = {
   timezone: "Australia/Sydney";
   start_time: string;

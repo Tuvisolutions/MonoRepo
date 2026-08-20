@@ -221,6 +221,7 @@ func NewRouter(log *slog.Logger, readiness ReadinessChecker, dataStore *store.St
 	mux.Handle("PATCH /api/v1/outreach/email-job", protectInternalAdmin(http.HandlerFunc(outreachBulkHandler.SetEmailJob)))
 	mux.Handle("PATCH /api/v1/outreach/send-window", protectInternalAdmin(http.HandlerFunc(outreachBulkHandler.SetSendSchedule)))
 	mux.Handle("GET /api/v1/outreach/bulk-send/status", protectInternalAdmin(http.HandlerFunc(outreachBulkHandler.Status)))
+	mux.Handle("GET /api/v1/outreach/deliveries", protectInternalAdmin(http.HandlerFunc(outreachBulkHandler.ListDeliveries)))
 	mux.Handle("GET /api/v1/outreach/sequences", protectInternalAdmin(http.HandlerFunc(outreachBulkHandler.ListSequences)))
 	mux.Handle("POST /api/v1/outreach/sequences", protectInternalAdmin(http.HandlerFunc(outreachBulkHandler.CreateSequence)))
 	mux.Handle("PUT /api/v1/outreach/sequences/{id}", protectInternalAdmin(http.HandlerFunc(outreachBulkHandler.UpdateSequence)))

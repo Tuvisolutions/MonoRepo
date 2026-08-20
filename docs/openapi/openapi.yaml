@@ -30,9 +30,10 @@ info:
        the demo bearer token.
     5. Create/edit/preview the outreach template, then make it active.
     6. `PATCH /api/v1/outreach/email-job` — enable quota-managed delivery.
-    7. Current sequence emails use the saved plain-text body as the canonical copy.
-       The sender adds a multipart HTML alternative with the shared Tuvi logo signature;
-       templates do not store or duplicate signature markup.
+    7. Current sequence emails use the enrolled version's saved plain-text body as the
+       canonical copy. Scheduled sends and inbox replies resolve the sender details from
+       the current active approved signature, then add the multipart HTML alternative and
+       shared Tuvi logo; templates do not store or duplicate signature markup.
 
     ## Bulk outreach (one-click)
     `POST /api/v1/outreach/bulk-send` or the email-job toggle enqueues
@@ -1751,6 +1752,68 @@ paths:
               schema:
                 $ref: '#/components/schemas/OutreachRecipientList'
 
+  /api/v1/outreach/deliveries:
+    get:
+      tags: [Email Campaigns]
+      summary: List scheduled outreach attempts for one Sydney date
+      operationId: listDailyOutreachDeliveries
+      security:
+        - bearerAuth: []
+      description: |
+        Requires role `internal_admin`. Lists quota-managed scheduled outreach attempts
+        whose attempt timestamp falls on the requested `Australia/Sydney` calendar date.
+        All ledger outcomes are included so From-address totals reconcile: sending,
+        sent, skipped, failed, and unknown. A `sent` outcome means the provider accepted
+        the message; it does not prove inbox delivery. A later bounce appears as failed
+        only after a separate reconciliation records it. Template tests, inbox replies,
+        health checks, and other direct messages are outside this ledger.
+      parameters:
+        - name: date
+          in: query
+          required: true
+          description: Australia/Sydney calendar date.
+          schema:
+            type: string
+            format: date
+        - name: account_id
+          in: query
+          description: Optional ledger sender id returned in the response's sender summaries.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Daily sender totals and paginated scheduled delivery attempts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyOutreachDeliveryList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Scheduled outreach delivery history is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/outreach/inbox:
     get:
       tags: [Email Campaigns]
@@ -1863,8 +1926,10 @@ paths:
       description: |
         Requires role internal_admin. Sends from the same configured Gmail mailbox and
         Gmail thread that captured the inbound message, then stores the accepted outbound
-        snapshot. It does not consume scheduled daily quota or wait for the Sydney send
-        window, and it does not restart a campaign paused by the inbound reply.
+        snapshot. The reply uses the current active approved sequence signature and fails
+        before provider delivery if that signature cannot be loaded. It does not consume
+        scheduled daily quota or wait for the Sydney send window, and it does not restart
+        a campaign paused by the inbound reply.
       requestBody:
         required: true
         content:
@@ -1909,8 +1974,10 @@ paths:
         Profile, demo, image-analysis, and legacy campaign readiness are not prerequisites.
 
         Every current sequence body is authored as plain text and rendered with a small
-        HTML alternative only for line breaks and the Tuvi logo signature. Rendering
-        permits exactly `https://tuvisolutions.com`.
+        HTML alternative only for line breaks and the Tuvi logo signature. An in-progress
+        campaign keeps the subject/body copy from its enrolled version but uses the current
+        active approved signature at dispatch time; signature lookup failure stops before
+        provider delivery. Rendering permits exactly `https://tuvisolutions.com`.
         The first enabled step is immediate; each later enabled step uses its configured
         delay (the approved default sequence uses 72 hours). Due follow-ups rank before
         new recipients but never remove new recipients from eligibility. Addresses used by
@@ -4955,7 +5022,7 @@ components:
           type: boolean
         hold_reason:
           type: string
-          description: Includes shared_email_limit when more than three restaurant records use the address.
+          description: Includes shared_email_limit for repeated addresses and delivery_unknown, delivery_failure_not_retryable, delivery_outcome_conflict, or delivery_retry_exhausted when retry safety pauses the campaign.
 
     OutreachRecipientList:
       type: object
@@ -5274,6 +5341,164 @@ components:
           type: integer
           minimum: 0
           description: Confirmed sends whose campaign step is not 1, 2, or 3.
+
+    OutreachDeliveryOutcomeCounts:
+      type: object
+      required: [total, sent, failed, unknown, skipped, sending]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          description: All scheduled quota attempts for the selected Sydney date and sender filter.
+        sent:
+          type: integer
+          minimum: 0
+          description: Attempts currently marked sent after provider acceptance; a separately reconciled bounce may later move an attempt to failed.
+        failed:
+          type: integer
+          minimum: 0
+          description: Attempts with a known final failure, including reconciled bounces.
+        unknown:
+          type: integer
+          minimum: 0
+          description: Ambiguous provider outcomes that must not be retried automatically.
+        skipped:
+          type: integer
+          minimum: 0
+        sending:
+          type: integer
+          minimum: 0
+
+    DailyOutreachDeliverySender:
+      type: object
+      required: [account_id, account_key, sender_email, counts, phase_1_sent, phase_2_sent, phase_3_sent, other_sent]
+      properties:
+        account_id:
+          type: string
+          format: uuid
+          description: Stable delivery-ledger sender id used by the account_id filter.
+        account_key:
+          type: string
+        sender_email:
+          type: string
+          description: Current effective From address for this ledger sender.
+        counts:
+          $ref: '#/components/schemas/OutreachDeliveryOutcomeCounts'
+        phase_1_sent:
+          type: integer
+          minimum: 0
+          description: Attempts for campaign step 1 currently marked sent after provider acceptance.
+        phase_2_sent:
+          type: integer
+          minimum: 0
+          description: Attempts for campaign step 2 currently marked sent after provider acceptance.
+        phase_3_sent:
+          type: integer
+          minimum: 0
+          description: Attempts for campaign step 3 currently marked sent after provider acceptance.
+        other_sent:
+          type: integer
+          minimum: 0
+          description: Attempts outside campaign steps 1, 2, and 3 currently marked sent after provider acceptance.
+
+    DailyOutreachDelivery:
+      type: object
+      required:
+        - id
+        - restaurant_id
+        - restaurant_name
+        - recipient_email
+        - account_id
+        - account_key
+        - sender_email
+        - campaign_step
+        - status
+        - outcome
+        - attempted_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        restaurant_id:
+          type: string
+          format: uuid
+        restaurant_name:
+          type: string
+        recipient_email:
+          type: string
+          description: Immutable recipient address captured by the delivery attempt; legacy rows may be blank.
+        account_id:
+          type: string
+          format: uuid
+        account_key:
+          type: string
+        sender_email:
+          type: string
+          description: Exact outbound snapshot From address when recorded, otherwise the sender's current From address.
+        campaign_step:
+          type: integer
+          minimum: 0
+          description: Sequence email number. Values 1, 2, and 3 correspond to Emails/Phases 1, 2, and 3.
+        status:
+          type: string
+          enum: [sending, sent, skipped, failed, unknown]
+        outcome:
+          type: string
+          description: Safe operator label derived from status and controlled error code.
+        error_code:
+          type: string
+          description: Controlled machine-readable error classification; raw provider responses are never returned.
+        subject:
+          type: string
+          description: Exact outbound snapshot subject when one was recorded; otherwise blank.
+        provider_message_id:
+          type: string
+          description: Opaque provider acceptance identifier when available.
+        attempted_at:
+          type: string
+          format: date-time
+        outcome_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Final outcome timestamp; omitted while the attempt is still in progress.
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Provider acceptance timestamp when one was recorded; it may remain on a later-reconciled failed or bounced attempt.
+
+    DailyOutreachDeliveryList:
+      type: object
+      required: [date, timezone, summary, senders, deliveries, total, limit, offset]
+      properties:
+        date:
+          type: string
+          format: date
+        timezone:
+          type: string
+          enum: [Australia/Sydney]
+        summary:
+          $ref: '#/components/schemas/OutreachDeliveryOutcomeCounts'
+        senders:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyOutreachDeliverySender'
+        deliveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyOutreachDelivery'
+        total:
+          type: integer
+          minimum: 0
+          description: Total matching attempts before pagination.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        offset:
+          type: integer
+          minimum: 0
 
     EmailJobControl:
       type: object

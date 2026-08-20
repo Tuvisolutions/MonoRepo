@@ -150,6 +150,70 @@ func TestDurableAccountPoolScheduledAmbiguousFailureRemainsUnknown(t *testing.T)
 	}
 }
 
+func TestDurableAccountPoolScheduledRateLimitRejectionSchedulesFailureWithoutQuarantine(t *testing.T) {
+	quota := &preflightQuotaStore{}
+	provider := &preflightProvider{err: newRetryableRejectionError(
+		GmailRateLimitRejectedErrorCode,
+		errors.New("gmail rejected the request before acceptance"),
+	)}
+	pool, err := newPersistentAccountPool(
+		[]accountProvider{{key: "account-1", provider: provider}},
+		40,
+		40,
+		24*time.Hour,
+		quota,
+	)
+	if err != nil {
+		t.Fatalf("newPersistentAccountPool() error = %v", err)
+	}
+
+	result, err := pool.Send(context.Background(), SendRequest{
+		To: "owner@example.com", Subject: "Scheduled outreach", TextBody: "hello",
+		Delivery: &DeliveryContext{CampaignID: uuid.New(), RestaurantID: uuid.New(), Step: 1},
+	})
+	if !errors.Is(err, ErrRetryableRejection) {
+		t.Fatalf("Send() error = %v, want ErrRetryableRejection", err)
+	}
+	if !result.QuotaManaged || !result.Finalized {
+		t.Fatalf("Send() result = %#v, want finalized quota-managed failure", result)
+	}
+	if quota.failures != 1 || quota.quarantines != 0 || quota.unknowns != 0 {
+		t.Fatalf("finalization calls = failed %d, quarantined %d, unknown %d", quota.failures, quota.quarantines, quota.unknowns)
+	}
+	if quota.failureCode != GmailRateLimitRejectedErrorCode {
+		t.Fatalf("failure code = %q, want %q", quota.failureCode, GmailRateLimitRejectedErrorCode)
+	}
+}
+
+func TestDurableAccountPoolUncodedRetryableRejectionRemainsUnknown(t *testing.T) {
+	quota := &preflightQuotaStore{}
+	provider := &preflightProvider{err: fmt.Errorf("%w: missing controlled code", ErrRetryableRejection)}
+	pool, err := newPersistentAccountPool(
+		[]accountProvider{{key: "account-1", provider: provider}},
+		40,
+		40,
+		24*time.Hour,
+		quota,
+	)
+	if err != nil {
+		t.Fatalf("newPersistentAccountPool() error = %v", err)
+	}
+
+	result, err := pool.Send(context.Background(), SendRequest{
+		To: "owner@example.com", Subject: "Scheduled outreach", TextBody: "hello",
+		Delivery: &DeliveryContext{CampaignID: uuid.New(), RestaurantID: uuid.New(), Step: 1},
+	})
+	if err == nil || errors.Is(err, ErrRetryableRejection) {
+		t.Fatalf("Send() error = %v, want fail-closed configuration error", err)
+	}
+	if !result.QuotaManaged || !result.Finalized {
+		t.Fatalf("Send() result = %#v, want finalized quota-managed unknown", result)
+	}
+	if quota.unknowns != 1 || quota.failures != 0 || quota.quarantines != 0 {
+		t.Fatalf("finalization calls = unknown %d, failed %d, quarantined %d", quota.unknowns, quota.failures, quota.quarantines)
+	}
+}
+
 func TestDurableAccountPoolWithoutFailureExtensionFailsClosed(t *testing.T) {
 	quota := &quotaTouchCounter{claim: DeliveryClaim{AttemptID: uuid.New(), AccountKey: "account-1"}}
 	provider := &preflightProvider{err: fmt.Errorf("%w: invalid grant", ErrAccountUnavailable)}

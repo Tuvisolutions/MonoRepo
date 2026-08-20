@@ -12,9 +12,22 @@ func TestEligibleLeadQueryUsesStrictLifecyclePriorityOrderingAndSharedEmailLimit
 	if strings.Count(eligibleLeadsBaseQuery, "status IN ('lead', 'emailed')") != 1 {
 		t.Fatal("eligible query must evaluate lifecycle only for the selected recipient")
 	}
-	for _, forbidden := range []string{"existing_campaign", "NOT EXISTS"} {
+	for _, forbidden := range []string{"existing_campaign"} {
 		if strings.Contains(eligibleLeadsBaseQuery, forbidden) {
 			t.Fatalf("eligible query still lets another campaign block this recipient through %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"prior_attempt.campaign_id = campaign.id",
+		"prior_attempt.campaign_step = campaign.next_step",
+		"prior_attempt.status IN ('sent', 'sending', 'unknown')",
+		"prior_attempt.status = 'failed'",
+		"lower(trim(prior_attempt.error_code)) NOT IN",
+		"prior_attempt.status <> 'skipped'",
+		") < 3",
+	} {
+		if !strings.Contains(eligibleLeadsBaseQuery, required) {
+			t.Fatalf("eligible query missing delivery retry guard %q", required)
 		}
 	}
 	if !strings.Contains(eligibleLeadsOrderBy, "ORDER BY (campaign.current_step > 0) DESC") {
@@ -42,6 +55,32 @@ func TestRecipientStatusCountsDoNotHideNewRecipientsBehindFollowups(t *testing.T
 	}
 	if !strings.Contains(recipientStatusCountsQuery, "current_step = 0 AND next_send_at <= now()") {
 		t.Fatal("recipient counts must include every due, policy-eligible new recipient")
+	}
+	for _, required := range []string{
+		"has_no_blocking_step_outcome",
+		"has_attempt_capacity",
+		"prior_attempt.status IN ('sent', 'sending', 'unknown')",
+		"prior_attempt.status = 'failed'",
+		"lower(trim(prior_attempt.error_code)) NOT IN",
+		"prior_attempt.status <> 'skipped'",
+	} {
+		if !strings.Contains(recipientStatusCountsQuery, required) {
+			t.Fatalf("recipient counts missing retry safety state %q", required)
+		}
+	}
+}
+
+func TestNextSequenceDueAtExcludesBlockedAndExhaustedSteps(t *testing.T) {
+	for _, required := range []string{
+		"prior_attempt.status IN ('sent', 'sending', 'unknown')",
+		"prior_attempt.status = 'failed'",
+		"lower(trim(prior_attempt.error_code)) NOT IN",
+		"prior_attempt.status <> 'skipped'",
+		") < 3",
+	} {
+		if !strings.Contains(nextSequenceDueAtQuery, required) {
+			t.Fatalf("next sequence due query missing retry guard %q", required)
+		}
 	}
 }
 
@@ -87,6 +126,21 @@ func TestSharedEmailGroupsQueryListsOnlyRepeatedValidEmails(t *testing.T) {
 	} {
 		if !strings.Contains(sharedEmailGroupsQuery, required) {
 			t.Fatalf("shared email groups query missing %q", required)
+		}
+	}
+}
+
+func TestActiveSequenceSignatureQueryRequiresCurrentApprovedVersion(t *testing.T) {
+	for _, required := range []string{
+		"is_active = true",
+		"status = 'approved'",
+		"approved_at IS NOT NULL",
+		"signature_name",
+		"signature_title",
+		"signature_details",
+	} {
+		if !strings.Contains(activeSequenceSignatureQuery, required) {
+			t.Fatalf("active signature query missing %q", required)
 		}
 	}
 }

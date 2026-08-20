@@ -50,7 +50,7 @@ export function StatusBadge({ status }: { status?: string | null }) {
     )
   ) {
     cls = "badge-ok";
-  } else if (["queued", "waiting", "paused", "draft", "pending"].includes(s)) {
+  } else if (["queued", "waiting", "paused", "draft", "pending", "sending", "unknown"].includes(s)) {
     cls = "badge-warn";
   } else if (
     ["failed", "rejected", "cancelled", "lost", "archived"].includes(s)

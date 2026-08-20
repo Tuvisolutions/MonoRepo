@@ -196,3 +196,22 @@ func TestSequenceApprovalRebasesOnlyUntouchedEnrollments(t *testing.T) {
 		}
 	}
 }
+
+func TestRecipientProgressSurfacesRetrySafetyHolds(t *testing.T) {
+	for _, required := range []string{
+		"delivery_failure_not_retryable",
+		"delivery_outcome_conflict",
+		"delivery_retry_exhausted",
+		"delivery_in_progress",
+		"campaign_stopped",
+		"prior_attempt.status = 'failed'",
+		"lower(trim(prior_attempt.error_code)) NOT IN",
+		"prior_attempt.status = 'unknown'",
+		"prior_attempt.status IN ('sent', 'sending')",
+		"prior_attempt.status <> 'skipped'",
+	} {
+		if !strings.Contains(recipientProgressQuery, required) {
+			t.Fatalf("recipient progress query missing retry safety state %q", required)
+		}
+	}
+}

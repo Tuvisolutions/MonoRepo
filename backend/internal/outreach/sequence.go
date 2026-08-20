@@ -177,6 +177,10 @@ type sequenceSignatureRepository interface {
 	GetSequenceSignature(ctx context.Context, sequenceID uuid.UUID) (SequenceSignature, error)
 }
 
+type activeSequenceSignatureRepository interface {
+	GetActiveSequenceSignature(ctx context.Context) (SequenceSignature, error)
+}
+
 func DefaultSequenceSignature() SequenceSignature {
 	return SequenceSignature{
 		Name:  "Praveen Maurya",
@@ -587,6 +591,78 @@ func (service *Service) PreviewRestaurantGreeting(
 	}, nil
 }
 
+const recipientProgressQuery = `
+	SELECT r.id,
+	       r.name,
+	       r.email,
+	       count(*) OVER (PARTITION BY lower(trim(r.email))) AS email_record_count,
+	       r.status,
+	       r.outreach_consent_basis,
+	       COALESCE(c.current_step, 0),
+	       c.next_step,
+	       c.next_send_at,
+	       r.last_email_sent_at,
+	       c.completed_at,
+	       r.email_send_count,
+	       COALESCE(c.status, ''),
+	       CASE
+	         WHEN trim(r.name) = '' THEN 'missing_name'
+	         WHEN lower(trim(r.email)) !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' THEN 'invalid_email'
+	         WHEN count(*) OVER (PARTITION BY lower(trim(r.email))) > 3 THEN 'shared_email_limit'
+	         WHEN r.status NOT IN ('lead', 'emailed') OR r.shown_interest THEN 'lifecycle_paused'
+	         WHEN r.outreach_consent_basis <> 'inferred_business'
+	           OR r.outreach_consent_recorded_at IS NULL
+	           OR trim(r.outreach_consent_source) = ''
+	           OR jsonb_typeof(r.outreach_consent_evidence) <> 'object'
+	           OR r.outreach_consent_evidence = '{}'::jsonb
+	         THEN 'consent_evidence_missing'
+	         WHEN c.id IS NULL THEN 'not_enrolled'
+	         WHEN c.status = 'send_unknown' THEN 'delivery_unknown'
+	         WHEN c.completed_at IS NOT NULL THEN 'complete'
+	         WHEN c.status = 'stopped' THEN COALESCE(NULLIF(c.stopped_reason, ''), 'campaign_stopped')
+	         WHEN c.status = 'sending' THEN 'delivery_in_progress'
+	         WHEN c.status <> 'approved' THEN 'campaign_not_approved'
+	         WHEN c.next_step IS NULL OR c.next_send_at IS NULL THEN 'campaign_not_scheduled'
+	         WHEN EXISTS (
+	           SELECT 1
+	           FROM email_delivery_attempts prior_attempt
+	           WHERE prior_attempt.campaign_id = c.id
+	             AND prior_attempt.campaign_step = c.next_step
+	             AND prior_attempt.status = 'failed'
+	             AND lower(trim(prior_attempt.error_code)) NOT IN (` + retryableEmailFailureCodesSQL + `)
+	         ) THEN 'delivery_failure_not_retryable'
+	         WHEN EXISTS (
+	           SELECT 1
+	           FROM email_delivery_attempts prior_attempt
+	           WHERE prior_attempt.campaign_id = c.id
+	             AND prior_attempt.campaign_step = c.next_step
+	             AND prior_attempt.status = 'unknown'
+	         ) THEN 'delivery_unknown'
+	         WHEN EXISTS (
+	           SELECT 1
+	           FROM email_delivery_attempts prior_attempt
+	           WHERE prior_attempt.campaign_id = c.id
+	             AND prior_attempt.campaign_step = c.next_step
+	             AND prior_attempt.status IN ('sent', 'sending')
+	         ) THEN 'delivery_outcome_conflict'
+	         WHEN (
+	           SELECT count(*)
+	           FROM email_delivery_attempts prior_attempt
+	           WHERE prior_attempt.campaign_id = c.id
+	             AND prior_attempt.campaign_step = c.next_step
+	             AND prior_attempt.status <> 'skipped'
+	         ) >= 3 THEN 'delivery_retry_exhausted'
+	         WHEN c.next_send_at > now() THEN 'scheduled'
+	         ELSE ''
+	       END
+	FROM restaurants r
+	LEFT JOIN email_campaigns c
+	  ON c.restaurant_id = r.id
+	 AND c.campaign_type = 'outreach'
+	 AND c.sequence_id IS NOT NULL
+	ORDER BY c.current_step DESC NULLS LAST, c.next_send_at NULLS LAST, r.created_at
+	LIMIT $1 OFFSET $2`
+
 func (service *Service) ListRecipientProgress(ctx context.Context, principal auth.Principal, limit, offset int) (RecipientProgressList, error) {
 	if !auth.IsInternalAdmin(principal.Role) {
 		return RecipientProgressList{}, restaurants.ErrForbidden
@@ -604,44 +680,7 @@ func (service *Service) ListRecipientProgress(ctx context.Context, principal aut
 	if err := service.pool.QueryRow(ctx, `SELECT count(*) FROM restaurants`).Scan(&total); err != nil {
 		return RecipientProgressList{}, fmt.Errorf("count outreach recipients: %w", err)
 	}
-	rows, err := service.pool.Query(ctx, `
-		SELECT r.id,
-		       r.name,
-		       r.email,
-		       count(*) OVER (PARTITION BY lower(trim(r.email))) AS email_record_count,
-		       r.status,
-		       r.outreach_consent_basis,
-		       COALESCE(c.current_step, 0),
-		       c.next_step,
-		       c.next_send_at,
-		       r.last_email_sent_at,
-		       c.completed_at,
-		       r.email_send_count,
-		       COALESCE(c.status, ''),
-		       CASE
-		         WHEN trim(r.name) = '' THEN 'missing_name'
-		         WHEN lower(trim(r.email)) !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' THEN 'invalid_email'
-		         WHEN count(*) OVER (PARTITION BY lower(trim(r.email))) > 3 THEN 'shared_email_limit'
-		         WHEN r.status NOT IN ('lead', 'emailed') OR r.shown_interest THEN 'lifecycle_paused'
-		         WHEN r.outreach_consent_basis <> 'inferred_business'
-		           OR r.outreach_consent_recorded_at IS NULL
-		           OR trim(r.outreach_consent_source) = ''
-		           OR jsonb_typeof(r.outreach_consent_evidence) <> 'object'
-		           OR r.outreach_consent_evidence = '{}'::jsonb
-		         THEN 'consent_evidence_missing'
-		         WHEN c.id IS NULL THEN 'not_enrolled'
-		         WHEN c.status = 'send_unknown' THEN 'delivery_unknown'
-		         WHEN c.completed_at IS NOT NULL THEN 'complete'
-		         WHEN c.next_send_at > now() THEN 'scheduled'
-		         ELSE ''
-		       END
-		FROM restaurants r
-		LEFT JOIN email_campaigns c
-		  ON c.restaurant_id = r.id
-		 AND c.campaign_type = 'outreach'
-		 AND c.sequence_id IS NOT NULL
-		ORDER BY c.current_step DESC NULLS LAST, c.next_send_at NULLS LAST, r.created_at
-		LIMIT $1 OFFSET $2`, limit, offset)
+	rows, err := service.pool.Query(ctx, recipientProgressQuery, limit, offset)
 	if err != nil {
 		return RecipientProgressList{}, fmt.Errorf("list outreach recipients: %w", err)
 	}
@@ -766,6 +805,18 @@ func (service *Service) sequenceSignature(ctx context.Context, sequenceID uuid.U
 		return SequenceSignature{}, repository.ErrNotFound
 	} else if err != nil {
 		return SequenceSignature{}, fmt.Errorf("load outreach sequence signature: %w", err)
+	}
+	return signature, nil
+}
+
+func (service *Service) activeSequenceSignature(ctx context.Context) (SequenceSignature, error) {
+	repo, ok := service.repo.(activeSequenceSignatureRepository)
+	if !ok {
+		return SequenceSignature{}, fmt.Errorf("active outreach sequence signature repository is not configured")
+	}
+	signature, err := repo.GetActiveSequenceSignature(ctx)
+	if err != nil {
+		return SequenceSignature{}, fmt.Errorf("load active outreach sequence signature: %w", err)
 	}
 	return signature, nil
 }

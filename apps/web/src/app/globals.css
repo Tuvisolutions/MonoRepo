@@ -934,6 +934,65 @@ textarea:focus-visible {
   font-weight: 800;
 }
 
+.delivery-history-filters {
+  display: grid;
+  grid-template-columns: minmax(13rem, 0.7fr) minmax(16rem, 1fr) auto;
+  gap: 0.85rem;
+  align-items: end;
+  margin-bottom: 1rem;
+}
+
+.delivery-history-heading,
+.delivery-history-pagination {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.delivery-history-pagination {
+  margin-top: 1rem;
+}
+
+.delivery-sender-outcomes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(5.5rem, 1fr));
+  gap: 0.25rem 0.75rem;
+  min-width: 12rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.delivery-sender-outcomes strong {
+  color: var(--ink);
+}
+
+.delivery-sender-viewing {
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+table.delivery-sender-table tr[data-selected="true"] td {
+  background: var(--accent-soft);
+}
+
+table.data td.delivery-wrap-cell {
+  min-width: 12rem;
+  max-width: 24rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.delivery-break-anywhere {
+  display: block;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 @media (max-width: 980px) {
   .sequence-columns {
     grid-template-columns: 1fr;
@@ -947,8 +1006,13 @@ textarea:focus-visible {
 @media (max-width: 680px) {
   .sequence-toolbar,
   .sequence-name-card,
-  .recipient-filters {
+  .recipient-filters,
+  .delivery-history-filters {
     grid-template-columns: 1fr;
+  }
+
+  .delivery-history-filters .btn {
+    width: 100%;
   }
 
   .sequence-toolbar-actions,
@@ -985,12 +1049,22 @@ textarea:focus-visible {
   table.recipient-table,
   table.recipient-table tbody,
   table.recipient-table tr,
-  table.recipient-table td {
+  table.recipient-table td,
+  table.delivery-sender-table,
+  table.delivery-sender-table tbody,
+  table.delivery-sender-table tr,
+  table.delivery-sender-table td,
+  table.delivery-history-table,
+  table.delivery-history-table tbody,
+  table.delivery-history-table tr,
+  table.delivery-history-table td {
     display: block;
     width: 100%;
   }
 
-  table.recipient-table thead {
+  table.recipient-table thead,
+  table.delivery-sender-table thead,
+  table.delivery-history-table thead {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -1002,12 +1076,16 @@ textarea:focus-visible {
     border: 0;
   }
 
-  table.recipient-table tr {
+  table.recipient-table tr,
+  table.delivery-sender-table tr,
+  table.delivery-history-table tr {
     padding: 0.5rem 0;
     border-bottom: 1px solid var(--line);
   }
 
-  table.recipient-table td {
+  table.recipient-table td,
+  table.delivery-sender-table td,
+  table.delivery-history-table td {
     display: grid;
     grid-template-columns: minmax(7rem, 0.45fr) minmax(0, 1fr);
     gap: 0.75rem;
@@ -1016,13 +1094,38 @@ textarea:focus-visible {
     white-space: normal;
   }
 
-  table.recipient-table td::before {
+  table.recipient-table td::before,
+  table.delivery-sender-table td::before,
+  table.delivery-history-table td::before {
     content: attr(data-label);
     color: var(--muted);
     font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+  }
+
+  table.data td.delivery-wrap-cell {
+    min-width: 0;
+    max-width: none;
+  }
+
+  table.delivery-sender-table td > .delivery-cell-content,
+  table.delivery-sender-table td > .delivery-sender-outcomes,
+  table.delivery-sender-table td > .delivery-sender-viewing,
+  table.delivery-sender-table td > .btn,
+  table.delivery-history-table td > .delivery-cell-content {
+    grid-column: 2;
+    min-width: 0;
+  }
+
+  .delivery-sender-outcomes {
+    grid-template-columns: 1fr;
+    white-space: normal;
+  }
+
+  table.delivery-sender-table td > .btn {
+    justify-self: start;
   }
 }
 

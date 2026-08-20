@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -36,6 +37,10 @@ type gmailProvider struct {
 	tokenMu  sync.Mutex
 	token    string
 	tokenExp time.Time
+}
+
+type gmailAPIErrorDetail struct {
+	Reason string `json:"reason"`
 }
 
 func NewGmail(emailCfg config.EmailConfig, gmailCfg config.GmailMailConfig) (Provider, error) {
@@ -119,7 +124,7 @@ func newGmailProvider(
 
 func (provider *gmailProvider) Send(ctx context.Context, req SendRequest) (SendResult, error) {
 	if err := ctx.Err(); err != nil {
-		return SendResult{}, err
+		return SendResult{}, newRetryableRejectionError(GmailPreSendUnavailableErrorCode, err)
 	}
 	req = EnsureTuviSignature(req)
 
@@ -151,9 +156,15 @@ func (provider *gmailProvider) Send(ctx context.Context, req SendRequest) (SendR
 	accessToken, err := provider.accessToken(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
-			return SendResult{}, ctx.Err()
+			return SendResult{}, newRetryableRejectionError(GmailPreSendUnavailableErrorCode, ctx.Err())
 		}
-		return SendResult{}, err
+		if errors.Is(err, ErrAccountUnavailable) {
+			return SendResult{}, err
+		}
+		// The Gmail message endpoint has not been called yet, so transient token
+		// acquisition failures are proven non-delivery rather than ambiguous
+		// provider outcomes.
+		return SendResult{}, newRetryableRejectionError(GmailPreSendUnavailableErrorCode, err)
 	}
 
 	payloadFields := map[string]string{
@@ -195,9 +206,10 @@ func (provider *gmailProvider) Send(ctx context.Context, req SendRequest) (SendR
 		ID       string `json:"id"`
 		ThreadID string `json:"threadId"`
 		Error    struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-			Status  string `json:"status"`
+			Code    int                   `json:"code"`
+			Message string                `json:"message"`
+			Status  string                `json:"status"`
+			Errors  []gmailAPIErrorDetail `json:"errors"`
 		} `json:"error"`
 	}
 	decodeErr := json.Unmarshal(respBody, &parsed)
@@ -213,6 +225,10 @@ func (provider *gmailProvider) Send(ctx context.Context, req SendRequest) (SendR
 			message = resp.Status
 		}
 		apiErr := fmt.Errorf("gmail API error (%d): %s", resp.StatusCode, redactEmailAddresses(message))
+		if resp.StatusCode == http.StatusTooManyRequests ||
+			(resp.StatusCode == http.StatusForbidden && gmailRateLimitRejected(parsed.Error.Errors)) {
+			return SendResult{}, newRetryableRejectionError(GmailRateLimitRejectedErrorCode, apiErr)
+		}
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			return SendResult{}, fmt.Errorf("%w: %v", ErrAccountUnavailable, apiErr)
 		}
@@ -237,6 +253,16 @@ func (provider *gmailProvider) Send(ctx context.Context, req SendRequest) (SendR
 		result.RedirectedTo = to
 	}
 	return result, nil
+}
+
+func gmailRateLimitRejected(details []gmailAPIErrorDetail) bool {
+	for _, detail := range details {
+		switch strings.ToLower(strings.TrimSpace(detail.Reason)) {
+		case "userratelimitexceeded", "ratelimitexceeded", "dailylimitexceeded":
+			return true
+		}
+	}
+	return false
 }
 
 func resolveGmailFromEmail(requested string, mailboxEmail string, configuredFromEmail string) (string, error) {
@@ -354,7 +380,7 @@ func gmailCredentialRejected(statusCode int, oauthError string) bool {
 		return true
 	}
 	switch strings.ToLower(strings.TrimSpace(oauthError)) {
-	case "access_denied", "deleted_client", "invalid_client", "invalid_grant", "invalid_scope", "unauthorized_client":
+	case "access_denied", "deleted_client", "invalid_client", "invalid_grant", "invalid_request", "invalid_scope", "unauthorized_client", "unsupported_grant_type":
 		return true
 	default:
 		return false
