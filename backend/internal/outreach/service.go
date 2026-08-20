@@ -194,20 +194,16 @@ func (service *Service) sendTemplateTestEmails(
 		if err != nil {
 			return result, fmt.Errorf("render sequence step %d: %w", step.Position, err)
 		}
-		request := emailprovider.EnsureTuviSignature(emailprovider.SendRequest{
+		request := ensureSequenceSignature(emailprovider.SendRequest{
 			To:       recipientEmail,
 			Subject:  rendered.Subject,
 			TextBody: rendered.BodyText,
-			Signature: &emailprovider.SignatureDetails{
-				Name: signature.Name, Title: signature.Title,
-				AdditionalDetails: signature.AdditionalDetails,
-			},
 			Metadata: map[string]string{
 				"purpose":       "outreach_template_test",
 				"template":      "sequence",
 				"sequence_step": fmt.Sprintf("%d", step.Position),
 			},
-		})
+		}, signature)
 		stepResult, err := provider.Send(ctx, request)
 		if err != nil {
 			return result, fmt.Errorf("send sequence step %d: %w", step.Position, err)
@@ -681,6 +677,10 @@ func (service *Service) sendLead(ctx context.Context, lead EligibleLead, bulkJob
 	if err := checkSequenceDeliveryEligibility(delivery); err != nil {
 		return false, err
 	}
+	signature, err := service.activeSequenceSignature(ctx)
+	if err != nil {
+		return false, err
+	}
 	facts := delivery.GreetingFacts
 	if facts.RestaurantName == "" {
 		facts.RestaurantName = delivery.RestaurantName
@@ -692,14 +692,10 @@ func (service *Service) sendLead(ctx context.Context, lead EligibleLead, bulkJob
 	if err != nil {
 		return false, fmt.Errorf("render outreach sequence step: %w", err)
 	}
-	request := emailprovider.EnsureTuviSignature(emailprovider.SendRequest{
+	request := ensureSequenceSignature(emailprovider.SendRequest{
 		To:       delivery.RecipientEmail,
 		Subject:  rendered.Subject,
 		TextBody: rendered.BodyText,
-		Signature: &emailprovider.SignatureDetails{
-			Name: delivery.Signature.Name, Title: delivery.Signature.Title,
-			AdditionalDetails: delivery.Signature.AdditionalDetails,
-		},
 		Metadata: map[string]string{
 			"campaign_id":   delivery.CampaignID.String(),
 			"restaurant_id": delivery.RestaurantID.String(),
@@ -712,7 +708,7 @@ func (service *Service) sendLead(ctx context.Context, lead EligibleLead, bulkJob
 			BulkJobID:    bulkJobID,
 			Step:         delivery.Step.Position,
 		},
-	})
+	}, signature)
 	request.Delivery.CampaignArtifactFingerprint = emailprovider.CampaignArtifactFingerprint(
 		request.Subject,
 		request.HTMLBody,
@@ -1051,7 +1047,7 @@ func (service *Service) ReplyToInboxMessage(
 	if err != nil {
 		return Message{}, fmt.Errorf("load inbox message for reply: %w", err)
 	}
-	request, err := prepareInboxReply(target, input)
+	request, err := service.prepareSignedInboxReply(ctx, target, input)
 	if err != nil {
 		return Message{}, err
 	}
@@ -1060,7 +1056,6 @@ func (service *Service) ReplyToInboxMessage(
 		return Message{}, ErrInboxReplyUnavailable
 	}
 
-	request = emailprovider.EnsureTuviSignature(request)
 	result, err := service.emailPool.SendDirectFrom(ctx, mailboxKey, request)
 	if err != nil {
 		if errors.Is(err, emailprovider.ErrAccountsExhausted) || strings.Contains(err.Error(), "is not configured") {
@@ -1092,4 +1087,29 @@ func (service *Service) ReplyToInboxMessage(
 		service.log.WarnContext(ctx, "outreach_inbox_reply_mark_read_failed", "message_id", target.ID, "error", err)
 	}
 	return reply, nil
+}
+
+func (service *Service) prepareSignedInboxReply(
+	ctx context.Context,
+	target Message,
+	input ReplyMessageInput,
+) (emailprovider.SendRequest, error) {
+	request, err := prepareInboxReply(target, input)
+	if err != nil {
+		return emailprovider.SendRequest{}, err
+	}
+	signature, err := service.activeSequenceSignature(ctx)
+	if err != nil {
+		return emailprovider.SendRequest{}, err
+	}
+	return ensureSequenceSignature(request, signature), nil
+}
+
+func ensureSequenceSignature(request emailprovider.SendRequest, signature SequenceSignature) emailprovider.SendRequest {
+	request.Signature = &emailprovider.SignatureDetails{
+		Name:              signature.Name,
+		Title:             signature.Title,
+		AdditionalDetails: signature.AdditionalDetails,
+	}
+	return emailprovider.EnsureTuviSignature(request)
 }

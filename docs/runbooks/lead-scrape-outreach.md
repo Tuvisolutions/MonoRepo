@@ -49,6 +49,12 @@ need explicit admin approval before public use.
 - Preview and test-send accept an optional `restaurant_id`. The server then
   ignores synthetic name/owner fields, renders authoritative facts, and returns
   only `greeting01` plus non-sensitive fact-category names for review.
+- Scheduled sends keep each in-progress recipient's subject and body pinned to
+  its enrolled sequence version, but resolve the signature from the current
+  active approved version immediately before preparing the provider request.
+  Inbox replies use that same active signature. If it cannot be loaded, both
+  paths fail closed before a provider call. A test send for an explicitly
+  selected sequence version continues to use that selected version's signature.
 - Any unsubscribe copy or URL must be authored in that saved template. The
   application does not append, require, validate, or render a specialized
   unsubscribe merge tag.
@@ -162,8 +168,9 @@ mailboxes or filter by stable account key, and unmatched messages remain
 replyable without pausing a restaurant campaign.
 
 The admin Inbox reply action sends plain text from the mailbox that captured the
-message, preserves the Gmail thread and RFC reply headers, and stores the
-accepted outbound snapshot. It does not resume the stopped sequence.
+message, appends the current active approved sequence signature, preserves the
+Gmail thread and RFC reply headers, and stores the accepted outbound snapshot.
+It does not resume the stopped sequence.
 
 ## Resume a failed scrape job
 

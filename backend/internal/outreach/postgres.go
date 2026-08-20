@@ -280,6 +280,29 @@ func (repo *Postgres) ListSequenceSteps(ctx context.Context, sequenceID uuid.UUI
 	return steps, nil
 }
 
+const activeSequenceSignatureQuery = `
+	SELECT signature_name, signature_title, signature_details
+	FROM outreach_email_sequences
+	WHERE is_active = true
+	  AND status = 'approved'
+	  AND approved_at IS NOT NULL
+	LIMIT 1`
+
+func (repo *Postgres) GetActiveSequenceSignature(ctx context.Context) (SequenceSignature, error) {
+	if repo.pool == nil {
+		return SequenceSignature{}, fmt.Errorf("database pool is not configured")
+	}
+	var signature SequenceSignature
+	if err := repo.pool.QueryRow(ctx, activeSequenceSignatureQuery).Scan(
+		&signature.Name, &signature.Title, &signature.AdditionalDetails,
+	); errors.Is(err, pgx.ErrNoRows) {
+		return SequenceSignature{}, repository.ErrNotFound
+	} else if err != nil {
+		return SequenceSignature{}, fmt.Errorf("query active outreach sequence signature: %w", err)
+	}
+	return signature, nil
+}
+
 func (repo *Postgres) GetSequenceSignature(ctx context.Context, sequenceID uuid.UUID) (SequenceSignature, error) {
 	if repo.pool == nil {
 		return SequenceSignature{}, fmt.Errorf("database pool is not configured")

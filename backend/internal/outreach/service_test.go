@@ -22,18 +22,20 @@ import (
 )
 
 type mockRepo struct {
-	count         int
-	leads         []outreach.EligibleLead
-	activeSteps   []outreach.SequenceStep
-	sequenceSteps []outreach.SequenceStep
-	signatures    map[uuid.UUID]outreach.SequenceSignature
-	greetingFacts map[uuid.UUID]outreach.GreetingFacts
-	greetingErr   error
-	delivery      outreach.SequenceDelivery
-	prepared      outreach.RenderedSequenceStep
-	preparedHTML  string
-	finalizations []outreach.SequenceDeliveryFinalization
-	nextDue       *time.Time
+	count              int
+	leads              []outreach.EligibleLead
+	activeSteps        []outreach.SequenceStep
+	sequenceSteps      []outreach.SequenceStep
+	signatures         map[uuid.UUID]outreach.SequenceSignature
+	activeSignature    *outreach.SequenceSignature
+	activeSignatureErr error
+	greetingFacts      map[uuid.UUID]outreach.GreetingFacts
+	greetingErr        error
+	delivery           outreach.SequenceDelivery
+	prepared           outreach.RenderedSequenceStep
+	preparedHTML       string
+	finalizations      []outreach.SequenceDeliveryFinalization
+	nextDue            *time.Time
 }
 
 type statusCountsRepo struct {
@@ -66,6 +68,16 @@ func (repo *mockRepo) ListSequenceSteps(context.Context, uuid.UUID) ([]outreach.
 func (repo *mockRepo) GetSequenceSignature(_ context.Context, sequenceID uuid.UUID) (outreach.SequenceSignature, error) {
 	if signature, ok := repo.signatures[sequenceID]; ok {
 		return signature, nil
+	}
+	return outreach.DefaultSequenceSignature(), nil
+}
+
+func (repo *mockRepo) GetActiveSequenceSignature(context.Context) (outreach.SequenceSignature, error) {
+	if repo.activeSignatureErr != nil {
+		return outreach.SequenceSignature{}, repo.activeSignatureErr
+	}
+	if repo.activeSignature != nil {
+		return *repo.activeSignature, nil
 	}
 	return outreach.DefaultSequenceSignature(), nil
 }
@@ -406,22 +418,57 @@ func TestRunBulkSendFinalizesAcceptedSequenceWithSharedSignature(t *testing.T) {
 	}
 }
 
-func TestRunBulkSendUsesSavedSequenceSignature(t *testing.T) {
+func TestRunBulkSendUsesActiveSignatureForPinnedCampaign(t *testing.T) {
 	repo := eligibleSequenceRepo()
 	repo.delivery.Signature = outreach.SequenceSignature{
-		Name: "Alex Morgan", Title: "Partnerships Manager",
-		AdditionalDetails: "Phone: +61 400 000 000",
+		Name: "Archived Sender", Title: "Old title",
 	}
+	activeSignature := outreach.SequenceSignature{
+		Name: "Alex Morgan", Title: "Partnerships Manager",
+		AdditionalDetails: "Phone: +61 400 000 000\nAddress: 10 Current Street",
+	}
+	repo.activeSignature = &activeSignature
 	provider := &mockEmailProvider{result: emailprovider.SendResult{ProviderMessageID: "mock"}}
 	service := newSequenceService(t, repo, provider)
 
 	if _, err := service.RunBulkSend(context.Background(), uuid.New()); err != nil {
 		t.Fatalf("RunBulkSend() error = %v", err)
 	}
-	for _, token := range []string{"Alex Morgan", "Partnerships Manager", "Phone: +61 400 000 000"} {
+	for _, token := range []string{"Alex Morgan", "Partnerships Manager", "Phone: +61 400 000 000", "Address: 10 Current Street"} {
 		if !strings.Contains(provider.request.TextBody, token) || !strings.Contains(provider.request.HTMLBody, token) {
-			t.Fatalf("saved sequence signature missing %q: %#v", token, provider.request)
+			t.Fatalf("active sequence signature missing %q: %#v", token, provider.request)
 		}
+	}
+	if strings.Contains(provider.request.TextBody, "Archived Sender") || strings.Contains(provider.request.HTMLBody, "Archived Sender") {
+		t.Fatalf("pinned archived signature leaked into request: %#v", provider.request)
+	}
+	if repo.prepared.BodyText != provider.request.TextBody || repo.preparedHTML != provider.request.HTMLBody {
+		t.Fatalf("prepared artifact does not match active-signed provider request")
+	}
+}
+
+func TestRunBulkSendFailsClosedWhenActiveSignatureIsUnavailable(t *testing.T) {
+	repo := eligibleSequenceRepo()
+	sentinel := errors.New("active signature unavailable")
+	repo.activeSignatureErr = sentinel
+	provider := &mockEmailProvider{result: emailprovider.SendResult{ProviderMessageID: "must-not-send"}}
+	service := newSequenceService(t, repo, provider)
+
+	summary, err := service.RunBulkSend(context.Background(), uuid.New())
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("RunBulkSend() error = %v, want active signature error", err)
+	}
+	if provider.sends != 0 {
+		t.Fatalf("provider sends = %d, want zero", provider.sends)
+	}
+	if repo.prepared != (outreach.RenderedSequenceStep{}) || repo.preparedHTML != "" {
+		t.Fatalf("delivery was prepared before signature resolution: %#v / %q", repo.prepared, repo.preparedHTML)
+	}
+	if len(repo.finalizations) != 0 {
+		t.Fatalf("finalizations = %#v, want none", repo.finalizations)
+	}
+	if summary.Attempted != 1 || summary.Failed != 1 || summary.StoppedReason != "delivery_error" {
+		t.Fatalf("summary = %#v, want one failed delivery_error", summary)
 	}
 }
 
@@ -614,6 +661,11 @@ func TestSendTemplateTestTargetsSelectedSavedDraftAndSignature(t *testing.T) {
 			},
 		},
 	}
+	activeSignature := outreach.SequenceSignature{
+		Name: "Active Sender", Title: "Active title",
+		AdditionalDetails: "Phone: active",
+	}
+	repo.activeSignature = &activeSignature
 	provider := &mockEmailProvider{result: emailprovider.SendResult{ProviderMessageID: "draft-test"}}
 	service := newSequenceService(t, repo, provider)
 
@@ -631,6 +683,9 @@ func TestSendTemplateTestTargetsSelectedSavedDraftAndSignature(t *testing.T) {
 		if !strings.Contains(provider.request.TextBody, token) || !strings.Contains(provider.request.HTMLBody, token) {
 			t.Fatalf("selected signature missing %q: %#v", token, provider.request)
 		}
+	}
+	if strings.Contains(provider.request.TextBody, "Active Sender") || strings.Contains(provider.request.HTMLBody, "Active Sender") {
+		t.Fatalf("active signature replaced selected draft signature: %#v", provider.request)
 	}
 }
 

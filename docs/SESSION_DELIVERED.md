@@ -4143,3 +4143,40 @@ Validated mode-`0600` backups are
 rollback tags retain the prior `13a0a47` API/admin and `4d6ea73` worker images;
 the release-local rollback override recreates only the affected service and
 requires no database restore or migration down.
+
+## 2026-08-19 — Active outreach signature propagation fix prepared
+
+**Role / Delivery:** A read-only production ledger audit proved that Gmail was
+not stripping the saved phone/address details. All 32 recent messages from the
+current active sequence contained its full saved signature, while 14 recent
+follow-ups pinned to older archived sequence versions used those versions'
+empty details. Inbox replies also fell back to the provider's default
+name/title-only signature.
+
+The unreleased backend fix preserves each campaign's pinned subject/body copy
+but resolves the signature from the current active approved sequence immediately
+before scheduled delivery. Inbox replies now use the same active signature.
+Both paths fail closed before artifact preparation or provider delivery if the
+active signature is unavailable. Explicit selected-version previews and test
+sends retain that selected version's saved signature. No migration, API shape,
+frontend, or provider-adapter change is required.
+
+**Checks Run:** Targeted outreach/provider tests passed 164 tests, including
+pinned-campaign, selected-draft, signed-reply, and lookup-failure regressions.
+The full backend passed 612 tests across 46 packages; targeted race tests passed
+164 tests. Go vet, all backend command builds, repository context checks,
+OpenAPI validation, and diff checks passed. OpenAPI retained 11 pre-existing
+warnings.
+
+**Business Value / Plan Fit:** Updating the approved sender signature now
+changes the next automated outreach message and manual inbox reply, including a
+follow-up whose copy remains intentionally pinned to an earlier version. The
+saved contact details no longer depend on when the recipient entered the
+sequence.
+
+**Risks / Approval State:** This is local and unreleased. No production file,
+database row, runtime control, Gmail message, health probe, or provider state was
+changed while diagnosing or validating it. Production remains on release
+`8c34503` at schema 54. Phase 2/3 automation remains separately paused; rollout
+requires explicit production deployment approval and must not send a real test
+email.

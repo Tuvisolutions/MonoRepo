@@ -1,12 +1,32 @@
 package outreach
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+
+	emailprovider "github.com/rajchodisetti/restaurant-platform/backend/internal/providers/email"
 )
+
+type activeSignatureReplyRepo struct {
+	signature SequenceSignature
+	err       error
+}
+
+func (*activeSignatureReplyRepo) ListEligibleLeads(context.Context, int) ([]EligibleLead, error) {
+	return nil, nil
+}
+
+func (*activeSignatureReplyRepo) CountEligibleLeads(context.Context) (int, error) {
+	return 0, nil
+}
+
+func (repo *activeSignatureReplyRepo) GetActiveSequenceSignature(context.Context) (SequenceSignature, error) {
+	return repo.signature, repo.err
+}
 
 func TestPrepareInboxReply(t *testing.T) {
 	target := Message{
@@ -33,6 +53,65 @@ func TestPrepareInboxReply(t *testing.T) {
 	}
 	if request.InReplyTo != target.RFCMessageID || request.References != target.RFCMessageID {
 		t.Fatalf("reply RFC headers = %q/%q", request.InReplyTo, request.References)
+	}
+}
+
+func TestInboxReplyUsesActiveSequenceSignature(t *testing.T) {
+	target := Message{
+		ID:        uuid.New(),
+		Direction: MessageDirectionInbound,
+		FromEmail: "owner@restaurant.example",
+		ToEmail:   "sales@tuvisolutions.com",
+		Subject:   "Original subject",
+	}
+	service := &Service{repo: &activeSignatureReplyRepo{signature: SequenceSignature{
+		Name:              "Alex Morgan",
+		Title:             "Partnerships Manager",
+		AdditionalDetails: "Phone: +61 400 000 000\nAddress: 10 Current Street",
+	}}}
+	request, err := service.prepareSignedInboxReply(
+		context.Background(),
+		target,
+		ReplyMessageInput{BodyText: "Thanks for replying."},
+	)
+	if err != nil {
+		t.Fatalf("prepareSignedInboxReply() error = %v", err)
+	}
+	for _, token := range []string{"Alex Morgan", "Phone: +61 400 000 000", "Address: 10 Current Street"} {
+		if !strings.Contains(request.TextBody, token) || !strings.Contains(request.HTMLBody, token) {
+			t.Fatalf("signed reply missing %q: %#v", token, request)
+		}
+	}
+	if request.Signature == nil || *request.Signature != (emailprovider.SignatureDetails{
+		Name:              "Alex Morgan",
+		Title:             "Partnerships Manager",
+		AdditionalDetails: "Phone: +61 400 000 000\nAddress: 10 Current Street",
+	}) {
+		t.Fatalf("reply signature metadata = %#v", request.Signature)
+	}
+}
+
+func TestInboxReplyFailsClosedWhenActiveSignatureIsUnavailable(t *testing.T) {
+	sentinel := errors.New("active signature unavailable")
+	service := &Service{repo: &activeSignatureReplyRepo{err: sentinel}}
+	target := Message{
+		ID:        uuid.New(),
+		Direction: MessageDirectionInbound,
+		FromEmail: "owner@restaurant.example",
+		ToEmail:   "sales@tuvisolutions.com",
+		Subject:   "Original subject",
+	}
+
+	request, err := service.prepareSignedInboxReply(
+		context.Background(),
+		target,
+		ReplyMessageInput{BodyText: "Thanks for replying."},
+	)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("prepareSignedInboxReply() error = %v, want active signature error", err)
+	}
+	if request.To != "" || request.Subject != "" || request.TextBody != "" || request.HTMLBody != "" || request.Signature != nil {
+		t.Fatalf("request = %#v, want empty request", request)
 	}
 }
 

@@ -90,3 +90,18 @@ func TestSharedEmailGroupsQueryListsOnlyRepeatedValidEmails(t *testing.T) {
 		}
 	}
 }
+
+func TestActiveSequenceSignatureQueryRequiresCurrentApprovedVersion(t *testing.T) {
+	for _, required := range []string{
+		"is_active = true",
+		"status = 'approved'",
+		"approved_at IS NOT NULL",
+		"signature_name",
+		"signature_title",
+		"signature_details",
+	} {
+		if !strings.Contains(activeSequenceSignatureQuery, required) {
+			t.Fatalf("active signature query missing %q", required)
+		}
+	}
+}

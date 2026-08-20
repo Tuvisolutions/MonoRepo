@@ -177,6 +177,10 @@ type sequenceSignatureRepository interface {
 	GetSequenceSignature(ctx context.Context, sequenceID uuid.UUID) (SequenceSignature, error)
 }
 
+type activeSequenceSignatureRepository interface {
+	GetActiveSequenceSignature(ctx context.Context) (SequenceSignature, error)
+}
+
 func DefaultSequenceSignature() SequenceSignature {
 	return SequenceSignature{
 		Name:  "Praveen Maurya",
@@ -766,6 +770,18 @@ func (service *Service) sequenceSignature(ctx context.Context, sequenceID uuid.U
 		return SequenceSignature{}, repository.ErrNotFound
 	} else if err != nil {
 		return SequenceSignature{}, fmt.Errorf("load outreach sequence signature: %w", err)
+	}
+	return signature, nil
+}
+
+func (service *Service) activeSequenceSignature(ctx context.Context) (SequenceSignature, error) {
+	repo, ok := service.repo.(activeSequenceSignatureRepository)
+	if !ok {
+		return SequenceSignature{}, fmt.Errorf("active outreach sequence signature repository is not configured")
+	}
+	signature, err := repo.GetActiveSequenceSignature(ctx)
+	if err != nil {
+		return SequenceSignature{}, fmt.Errorf("load active outreach sequence signature: %w", err)
 	}
 	return signature, nil
 }

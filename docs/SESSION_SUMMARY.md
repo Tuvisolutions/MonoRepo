@@ -1,5 +1,5 @@
-Release `8c34503` is deployed to production API/admin/worker and PR head `ff5f634` to the existing QA API at schema 54; canonical and personal-mirror `master` are synchronized.
-The `contact` Gmail tombstone loop is fixed: all six mailboxes have successfully polled since rollout, their stored errors are clear, and non-message-404 failures remain retryable.
-The admin now defaults to named restaurant-linked inbox threads; the final 10-day snapshot shows 6 restaurant threads and hides 358 unmatched/unnamed threads unless the filter is disabled.
-Production outreach control and the future queued job are unchanged, with 21 sent, 2 failed, and zero in-flight attempts; deployment triggered no send, migration, or provider health action.
-QA/prod rollback containers, immutable image tags, mode-0600 database/config backups, and the original dirty worktree remain preserved.
+Production remains on release `8c34503` at schema 54; Phase 2/3 automated outreach remains temporarily paused.
+A read-only audit proved the current active sequence already includes the saved phone/address, while archived pinned follow-ups and inbox replies used older/default signature details.
+An unreleased backend fix now applies the active approved signature to scheduled outreach and inbox replies while preserving pinned subject/body copy and selected-version test behavior.
+Backend tests (612), targeted race tests (164), vet, command builds, OpenAPI validation, repository context checks, and diff checks pass.
+No deployment, migration, production mutation, provider call, or real email was performed; production rollout still requires explicit approval.
