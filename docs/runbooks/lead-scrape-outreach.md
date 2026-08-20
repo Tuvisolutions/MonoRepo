@@ -66,6 +66,19 @@ need explicit admin approval before public use.
   selection and rechecked immediately before delivery. The Restaurants admin
   page lists every shared-email group and its restaurant records.
 - A failure or unknown provider result never advances the integer step.
+- The local/unreleased safe-retry policy admits only a definitive
+  `gmail_rate_limit_rejected`, `gmail_pre_send_unavailable`, or
+  `credential_or_authorization_rejected` failure. It preserves that exact
+  campaign step and schedules it no earlier than the next saved
+  `Australia/Sydney` send window, preserving any later campaign hold, with at
+  most three total attempts for the campaign step. This policy
+  is not deployed until the matching application release is explicitly
+  approved.
+- Unknown, sent, sending, and non-allowlisted failures never enter this
+  automatic retry path. Skipped outcomes are not admitted to the new
+  definitive-failure scheduler or its cap; established skip handling remains
+  separate. The persisted runtime control and every claim-time eligibility gate
+  remain authoritative, including the temporary step 2/3 pause.
 - A confirmed send advances the step and records sent/next-due timestamps.
 - Future-due work is deferred; it does not disable the email job.
 
@@ -117,15 +130,23 @@ Existing environment secrets are never read into the browser or copied into the
 database.
 
 A definitive OAuth credential rejection (for example an expired/revoked grant,
-invalid client/scope, or Gmail 401/403 response) is known to occur before Gmail
-accepts the message. Direct template tests skip that account for the complete
-test batch and try the next configured sender. Scheduled delivery records the
-attempt as failed, returns the campaign to its approved step, and excludes the
-account from later claims with the dedicated
-`credential_or_authorization_rejected` health code. Network errors, provider
-5xx responses, malformed success responses, and other ambiguous outcomes remain
-`unknown` and are never retried automatically because Gmail may have accepted
-the message.
+invalid client/scope, Gmail 401, or a non-rate-limit Gmail 403 response) is known
+to occur before Gmail accepts the message. Direct template tests skip that
+account for the complete test batch and try the next configured sender.
+Scheduled delivery records the attempt as failed with
+`credential_or_authorization_rejected` and excludes the account from later
+claims with the dedicated health quarantine.
+
+Gmail 429, and Gmail 403 responses whose structured reason is
+`userRateLimitExceeded`, `rateLimitExceeded`, or `dailyLimitExceeded`, are
+separate definitive pre-acceptance rejections. The local/unreleased recovery
+policy records `gmail_rate_limit_rejected` and cools that quota account until the
+next Sydney window; it does not mark valid credentials unhealthy. A transient
+OAuth token failure before the Gmail message endpoint is called records
+`gmail_pre_send_unavailable` and follows the same bounded scheduler. Network
+errors, provider 5xx responses, malformed success responses, and other ambiguous
+outcomes from the Gmail message endpoint remain `unknown` and are never retried
+automatically because Gmail may have accepted the message.
 
 An enabled due health check that succeeds clears the dedicated quarantine.
 For database-managed accounts, replacing credentials, correcting the From
@@ -162,6 +183,100 @@ message bodies are never returned by this endpoint.
 Template test sends, manual inbox replies, health checks, consultation messages,
 and other direct email paths are not quota-managed delivery attempts and are not
 included in this screen.
+
+## Recover definitively rejected scheduled sends
+
+> **Local/unreleased:** This automatic recovery policy is accepted in the
+> [safe failed-outreach retry ADR](../adr/2026-08-19-safe-failed-outreach-retry.md)
+> but does not change production until the matching API and worker build is
+> explicitly approved and deployed.
+
+Do not reset a restaurant's contact/email fields and do not refund or reset an
+email account's usage, cycle, or ramp counters. Those values preserve confirmed
+contact and reserved provider capacity; they are not the failed-delivery queue.
+
+The worker may requeue only the exact campaign step whose immutable attempt is
+`failed` with one of these controlled codes:
+
+- `gmail_rate_limit_rejected`: set the selected quota account's
+  `available_at` no earlier than the next Sydney window start. Do not create a
+  credential-health quarantine.
+- `gmail_pre_send_unavailable`: the OAuth token/pre-send stage failed before the
+  Gmail message endpoint was called. Apply the same bounded next-window retry;
+  cancellation before that endpoint is also safe, while cancellation at the
+  message endpoint remains ambiguous.
+- `credential_or_authorization_rejected`: keep the dedicated account health
+  quarantine. The campaign may use another healthy mailbox when it becomes due.
+
+The campaign retains its existing step and becomes due no earlier than the next
+local calendar day's saved `Australia/Sydney` window start. Any later campaign
+hold remains in force. The conversion uses the IANA timezone, so the local start
+remains correct across daylight-saving changes. Each retry consumes a fresh
+quota slot and creates a new immutable attempt. The cap is three non-skipped
+provider-boundary attempts for one `(campaign_id, campaign_step)`; established
+skipped/redirected safety attempts do not consume this failure cap. A retained
+`sent`, `sending`, or `unknown` outcome discovered while finalizing a new failed
+attempt stops recovery with `delivery_outcome_conflict`. If an inconsistent row
+was already manually reopened, list/claim gates leave it paused without another
+provider call until an operator reconciles it. Another allowlisted failure on
+the third counted attempt stops the campaign with `delivery_retry_exhausted`. A
+failed code outside the allowlist stops with
+`delivery_failure_not_retryable`. The same list and claim gates pause a
+historical non-allowlisted failure if its campaign was manually reopened; this
+includes an accepted-then-bounced attempt.
+
+Recovery does not enable `email_job`, bypass account health, or override
+lifecycle, interest, consent, sequence approval, enabled-step, schedule, pacing,
+quota, or idempotency checks. Keep the job disabled through deployment and
+verification. Enabling it is a separate production mutation requiring explicit
+approval.
+
+On an admitted failure, the same database transaction resets only the persisted
+attempt count of the exact running bulk job linked to that delivery. It does not
+change the job's status, owner, lease, payload, or availability. The live worker
+therefore completes its normal fenced deferral; after a process crash, lease
+expiry can reclaim the otherwise one-attempt job. This is job crash recovery,
+not permission to retry an `unknown` provider outcome.
+
+Review the affected Sydney date under **Outreach → Send history**. Filter by
+sender and confirm the failed row's controlled error code. Use aggregate queries
+only when database evidence is needed:
+
+```sql
+WITH sydney_day AS (
+  SELECT
+    date_trunc('day', now() AT TIME ZONE 'Australia/Sydney')
+      AT TIME ZONE 'Australia/Sydney' AS starts_at,
+    (date_trunc('day', now() AT TIME ZONE 'Australia/Sydney') + interval '1 day')
+      AT TIME ZONE 'Australia/Sydney' AS ends_at
+)
+SELECT account.account_key, attempt.status, attempt.error_code, count(*)
+FROM email_delivery_attempts AS attempt
+JOIN outreach_email_accounts AS account ON account.id = attempt.account_id
+CROSS JOIN sydney_day
+WHERE attempt.created_at >= sydney_day.starts_at
+  AND attempt.created_at < sydney_day.ends_at
+GROUP BY account.account_key, attempt.status, attempt.error_code
+ORDER BY account.account_key, attempt.status, attempt.error_code;
+
+SELECT event_type, COALESCE(metadata->>'error_code', '') AS error_code, count(*)
+FROM email_events
+WHERE event_type IN ('retry_scheduled', 'retry_exhausted')
+  AND event_time >= date_trunc('day', now() AT TIME ZONE 'Australia/Sydney')
+      AT TIME ZONE 'Australia/Sydney'
+  AND event_time < (date_trunc('day', now() AT TIME ZONE 'Australia/Sydney') + interval '1 day')
+      AT TIME ZONE 'Australia/Sydney'
+GROUP BY event_type, COALESCE(metadata->>'error_code', '')
+ORDER BY event_type, error_code;
+```
+
+Escalate for operator reconciliation when an attempt is `unknown`, a sending
+lease ages into `unknown`, a failure code is outside the allowlist, or the cap is
+exhausted. Never infer a retry from a message missing in Gmail Sent. A message
+accepted by Gmail and later bounced requires an authenticated structured DSN or
+authoritative provider event that correlates to exactly one immutable attempt;
+free-form bounce text and mailbox visibility are insufficient. The current
+unreleased recovery path does not auto-retry accepted-then-bounced messages.
 
 ## Unified inbox across configured sending mailboxes
 
@@ -239,7 +354,13 @@ explicitly approved enabling it. Do not use a live provider for smoke tests.
 
 ## Rollback
 
-Roll back application images first, then apply the matching migration down only
-if no sequence sends have advanced under the new schema. Historical OCR columns
-remain during the stabilization window so the schema rollback is reversible;
-the retired provider credentials are not restored automatically.
+Disable `email_job` before rolling back application images. The bounded
+failed-delivery retry policy has no migration; preserve its attempts, events,
+campaign timestamps, account cooldowns, and credential quarantines. Review any
+campaign with retry-scheduled or retry-exhausted history before a prior worker is
+enabled, and never mass-reset restaurant delivery fields or mailbox counters.
+
+For a schema-bearing release, apply the matching migration down only if no
+sequence sends have advanced under that schema. Historical OCR columns remain
+during the stabilization window so the schema rollback is reversible; the
+retired provider credentials are not restored automatically.

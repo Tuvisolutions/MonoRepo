@@ -552,6 +552,25 @@ func (service *Service) RunBulkSend(ctx context.Context, triggeredBy uuid.UUID, 
 				summary.NextAvailableAt = nextAvailableAt
 				break
 			}
+			if service.emailPool.Durable() && errors.Is(err, emailprovider.ErrRetryableRejection) {
+				summary.Attempted++
+				summary.Failed++
+				// This describes why the current job execution yielded. The
+				// repository audit event records whether this particular campaign
+				// was scheduled again or exhausted its per-step attempt cap.
+				summary.StoppedReason = "retryable_provider_rejection"
+				nextAvailableAt, availabilityErr := service.emailPool.NextAvailableAt(ctx)
+				if availabilityErr != nil {
+					_, _ = SetEmailJobControl(ctx, service.pool, false, nil)
+					return summary, availabilityErr
+				}
+				if nextAvailableAt == nil {
+					retryAt := time.Now().UTC().Add(time.Second)
+					nextAvailableAt = &retryAt
+				}
+				summary.NextAvailableAt = nextAvailableAt
+				break
+			}
 			summary.Attempted++
 			if errors.Is(err, campaigns.ErrNotEligible) {
 				summary.Skipped++
@@ -858,6 +877,21 @@ func (service *Service) UpdateJobSummary(
 	return nil
 }
 
+const deferRunningBulkJobQuery = `
+	UPDATE job_runs
+	SET status = 'queued',
+	    payload = $2,
+	    available_at = $3,
+	    attempts = 0,
+	    locked_at = NULL,
+	    locked_by = NULL,
+	    lease_expires_at = NULL,
+	    updated_at = now()
+	WHERE id = $1::uuid
+	  AND job_type = $4
+	  AND status = 'running'
+	  AND locked_by = $5`
+
 func (service *Service) DeferBulkJob(
 	ctx context.Context,
 	jobID string,
@@ -872,23 +906,9 @@ func (service *Service) DeferBulkJob(
 	if err != nil {
 		return err
 	}
-	const query = `
-		UPDATE job_runs
-		SET status = 'queued',
-		    payload = $2,
-		    available_at = $3,
-		    attempts = 0,
-		    locked_at = NULL,
-		    locked_by = NULL,
-		    lease_expires_at = NULL,
-		    updated_at = now()
-		WHERE id = $1::uuid
-		  AND job_type = $4
-		  AND status = 'running'
-		  AND locked_by = $5`
 	result, err := service.pool.Exec(
 		ctx,
-		query,
+		deferRunningBulkJobQuery,
 		jobID,
 		payload,
 		summary.NextAvailableAt.UTC(),

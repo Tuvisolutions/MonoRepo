@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/rajchodisetti/restaurant-platform/backend/internal/auth"
+	emailprovider "github.com/rajchodisetti/restaurant-platform/backend/internal/providers/email"
 	"github.com/rajchodisetti/restaurant-platform/backend/internal/restaurants"
 )
 
@@ -299,6 +300,12 @@ func deliveryOutcomeLabel(status, errorCode string) string {
 	if normalizedStatus == "failed" {
 		if strings.EqualFold(strings.TrimSpace(errorCode), "gmail_sender_rate_limit_bounce") {
 			return "Bounced — sender rate limit"
+		}
+		if strings.EqualFold(strings.TrimSpace(errorCode), emailprovider.GmailRateLimitRejectedErrorCode) {
+			return "Rate limited — not sent"
+		}
+		if strings.EqualFold(strings.TrimSpace(errorCode), emailprovider.GmailPreSendUnavailableErrorCode) {
+			return "Gmail unavailable — not sent"
 		}
 		if strings.EqualFold(strings.TrimSpace(errorCode), "credential_or_authorization_rejected") ||
 			strings.EqualFold(strings.TrimSpace(errorCode), "provider_rejected_before_acceptance") {

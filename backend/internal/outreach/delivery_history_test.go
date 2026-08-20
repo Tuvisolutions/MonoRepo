@@ -147,6 +147,8 @@ func TestDeliveryOutcomeLabelDistinguishesAcceptanceAndBounce(t *testing.T) {
 	}{
 		{status: "sent", want: "Provider accepted"},
 		{status: "failed", code: "gmail_sender_rate_limit_bounce", want: "Bounced — sender rate limit"},
+		{status: "failed", code: "gmail_rate_limit_rejected", want: "Rate limited — not sent"},
+		{status: "failed", code: "gmail_pre_send_unavailable", want: "Gmail unavailable — not sent"},
 		{status: "failed", code: "credential_or_authorization_rejected", want: "Rejected before send"},
 		{status: "failed", code: "provider_rejected_before_acceptance", want: "Rejected before send"},
 		{status: "sent", code: "gmail_sender_rate_limit_bounce", want: "Provider accepted"},

@@ -16,40 +16,101 @@ import (
 	emailprovider "github.com/rajchodisetti/restaurant-platform/backend/internal/providers/email"
 )
 
-func TestGmailProviderClassifiesOnlyDefinitivePreAcceptanceAccountFailures(t *testing.T) {
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (roundTrip roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
+
+func TestGmailProviderClassifiesPreAcceptanceFailures(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		tokenStatus int
-		tokenBody   string
-		sendStatus  int
-		sendBody    string
-		wantSafe    bool
-		wantSends   int
+		name                   string
+		tokenStatus            int
+		tokenBody              string
+		sendStatus             int
+		sendBody               string
+		wantAccountUnavailable bool
+		wantRetryable          bool
+		wantErrorCode          string
+		wantSends              int
+		forbidErrorText        string
 	}{
 		{
 			name: "revoked refresh token", tokenStatus: http.StatusBadRequest,
-			tokenBody: `{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`,
-			wantSafe:  true,
+			tokenBody:              `{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`,
+			wantAccountUnavailable: true,
 		},
 		{
 			name: "missing Gmail send permission", tokenStatus: http.StatusOK,
-			tokenBody:  `{"access_token":"access-token","expires_in":3600}`,
-			sendStatus: http.StatusForbidden,
-			sendBody:   `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Insufficient Permission"}}`,
-			wantSafe:   true, wantSends: 1,
+			tokenBody:              `{"access_token":"access-token","expires_in":3600}`,
+			sendStatus:             http.StatusForbidden,
+			sendBody:               `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Insufficient Permission","errors":[{"domain":"global","reason":"insufficientPermissions"}]}}`,
+			wantAccountUnavailable: true, wantSends: 1,
 		},
 		{
 			name: "authorization rejection without JSON", tokenStatus: http.StatusOK,
-			tokenBody:  `{"access_token":"access-token","expires_in":3600}`,
-			sendStatus: http.StatusUnauthorized,
-			sendBody:   "",
-			wantSafe:   true, wantSends: 1,
+			tokenBody:              `{"access_token":"access-token","expires_in":3600}`,
+			sendStatus:             http.StatusUnauthorized,
+			sendBody:               "",
+			wantAccountUnavailable: true, wantSends: 1,
 		},
 		{
-			name: "temporary token endpoint failure is not a credential rejection", tokenStatus: http.StatusInternalServerError,
-			tokenBody: `{"error":"temporarily_unavailable"}`,
+			name: "per-user rate limit", tokenStatus: http.StatusOK,
+			tokenBody:     `{"access_token":"access-token","expires_in":3600}`,
+			sendStatus:    http.StatusForbidden,
+			sendBody:      `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Rate limit for owner@example.com","errors":[{"domain":"usageLimits","reason":"userRateLimitExceeded"}]}}`,
+			wantRetryable: true, wantErrorCode: emailprovider.GmailRateLimitRejectedErrorCode,
+			wantSends: 1, forbidErrorText: "owner@example.com",
+		},
+		{
+			name: "application request rate limit", tokenStatus: http.StatusOK,
+			tokenBody:     `{"access_token":"access-token","expires_in":3600}`,
+			sendStatus:    http.StatusForbidden,
+			sendBody:      `{"error":{"code":403,"message":"Rate Limit Exceeded","errors":[{"domain":"global","reason":"backendError"},{"domain":"usageLimits","reason":"rateLimitExceeded"}]}}`,
+			wantRetryable: true, wantErrorCode: emailprovider.GmailRateLimitRejectedErrorCode, wantSends: 1,
+		},
+		{
+			name: "project daily rate limit", tokenStatus: http.StatusOK,
+			tokenBody:     `{"access_token":"access-token","expires_in":3600}`,
+			sendStatus:    http.StatusForbidden,
+			sendBody:      `{"error":{"code":403,"message":"Daily Limit Exceeded","errors":[{"domain":"usageLimits","reason":"dailyLimitExceeded"}]}}`,
+			wantRetryable: true, wantErrorCode: emailprovider.GmailRateLimitRejectedErrorCode, wantSends: 1,
+		},
+		{
+			name: "mail sending limit with malformed response", tokenStatus: http.StatusOK,
+			tokenBody:     `{"access_token":"access-token","expires_in":3600}`,
+			sendStatus:    http.StatusTooManyRequests,
+			sendBody:      `<html>Too many requests</html>`,
+			wantRetryable: true, wantErrorCode: emailprovider.GmailRateLimitRejectedErrorCode, wantSends: 1,
+		},
+		{
+			name: "unverified 403 remains an account rejection", tokenStatus: http.StatusOK,
+			tokenBody:              `{"access_token":"access-token","expires_in":3600}`,
+			sendStatus:             http.StatusForbidden,
+			sendBody:               `{"error":{"code":403,"status":"RESOURCE_EXHAUSTED","message":"Unclassified rejection"}}`,
+			wantAccountUnavailable: true, wantSends: 1,
+		},
+		{
+			name: "temporary token endpoint failure is retryable before send", tokenStatus: http.StatusInternalServerError,
+			tokenBody:     `{"error":"temporarily_unavailable"}`,
+			wantRetryable: true, wantErrorCode: emailprovider.GmailPreSendUnavailableErrorCode,
+		},
+		{
+			name: "token endpoint rate limit is retryable before send", tokenStatus: http.StatusTooManyRequests,
+			tokenBody:     `<html>Too many requests</html>`,
+			wantRetryable: true, wantErrorCode: emailprovider.GmailPreSendUnavailableErrorCode,
+		},
+		{
+			name: "malformed token success is retryable before send", tokenStatus: http.StatusOK,
+			tokenBody:     `<html>not JSON</html>`,
+			wantRetryable: true, wantErrorCode: emailprovider.GmailPreSendUnavailableErrorCode,
+		},
+		{
+			name: "invalid token request is an account configuration rejection", tokenStatus: http.StatusBadRequest,
+			tokenBody:              `{"error":"invalid_request"}`,
+			wantAccountUnavailable: true,
 		},
 		{
 			name: "ambiguous provider failure", tokenStatus: http.StatusOK,
@@ -105,13 +166,137 @@ func TestGmailProviderClassifiesOnlyDefinitivePreAcceptanceAccountFailures(t *te
 			if err == nil {
 				t.Fatal("Send() error = nil, want provider failure")
 			}
-			if got := errors.Is(err, emailprovider.ErrAccountUnavailable); got != test.wantSafe {
-				t.Fatalf("errors.Is(ErrAccountUnavailable) = %v, want %v; error = %v", got, test.wantSafe, err)
+			if got := errors.Is(err, emailprovider.ErrAccountUnavailable); got != test.wantAccountUnavailable {
+				t.Fatalf("errors.Is(ErrAccountUnavailable) = %v, want %v; error = %v", got, test.wantAccountUnavailable, err)
+			}
+			if got := errors.Is(err, emailprovider.ErrRetryableRejection); got != test.wantRetryable {
+				t.Fatalf("errors.Is(ErrRetryableRejection) = %v, want %v; error = %v", got, test.wantRetryable, err)
+			}
+			if got := emailprovider.RetryableRejectionErrorCode(err); got != test.wantErrorCode {
+				t.Fatalf("RetryableRejectionErrorCode() = %q, want %q; error = %v", got, test.wantErrorCode, err)
+			}
+			if test.wantRetryable {
+				var typed *emailprovider.RetryableRejectionError
+				if !errors.As(err, &typed) {
+					t.Fatalf("errors.As(*RetryableRejectionError) = false; error = %v", err)
+				}
+			}
+			if test.forbidErrorText != "" && strings.Contains(err.Error(), test.forbidErrorText) {
+				t.Fatalf("Send() error leaked sanitized provider text %q: %v", test.forbidErrorText, err)
 			}
 			if sendRequests != test.wantSends {
 				t.Fatalf("Gmail send requests = %d, want %d", sendRequests, test.wantSends)
 			}
 		})
+	}
+}
+
+func TestGmailProviderLeavesTransportFailureAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == "/token" {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"access_token":"access-token","expires_in":3600}`)),
+				Request:    request,
+			}, nil
+		}
+		return nil, errors.New("connection reset")
+	})}
+	provider, err := emailprovider.NewGmailWithClient(
+		config.EmailConfig{},
+		config.GmailMailConfig{
+			MailboxEmail: "sales@example.com", ClientID: "client-id",
+			ClientSecret: "client-secret", RefreshToken: "refresh-token",
+		},
+		client, "http://gmail.test/gmail/v1", "http://gmail.test/token",
+	)
+	if err != nil {
+		t.Fatalf("NewGmailWithClient() error = %v", err)
+	}
+
+	_, err = provider.Send(context.Background(), emailprovider.SendRequest{
+		To: "owner@example.com", Subject: "Test", TextBody: "Body",
+	})
+	if err == nil {
+		t.Fatal("Send() error = nil, want transport failure")
+	}
+	if errors.Is(err, emailprovider.ErrAccountUnavailable) || errors.Is(err, emailprovider.ErrRetryableRejection) {
+		t.Fatalf("Send() error was classified as a confirmed pre-acceptance rejection: %v", err)
+	}
+	if got := emailprovider.RetryableRejectionErrorCode(err); got != "" {
+		t.Fatalf("RetryableRejectionErrorCode() = %q, want empty code", got)
+	}
+}
+
+func TestGmailProviderClassifiesTokenTransportFailureBeforeSend(t *testing.T) {
+	t.Parallel()
+
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/token" {
+			t.Fatalf("unexpected request path %q; Gmail send endpoint must not be called", request.URL.Path)
+		}
+		return nil, errors.New("token connection reset")
+	})}
+	provider, err := emailprovider.NewGmailWithClient(
+		config.EmailConfig{},
+		config.GmailMailConfig{
+			MailboxEmail: "sales@example.com", ClientID: "client-id",
+			ClientSecret: "client-secret", RefreshToken: "refresh-token",
+		},
+		client, "http://gmail.test/gmail/v1", "http://gmail.test/token",
+	)
+	if err != nil {
+		t.Fatalf("NewGmailWithClient() error = %v", err)
+	}
+
+	_, err = provider.Send(context.Background(), emailprovider.SendRequest{
+		To: "owner@example.com", Subject: "Test", TextBody: "Body",
+	})
+	if !errors.Is(err, emailprovider.ErrRetryableRejection) {
+		t.Fatalf("Send() error = %v, want ErrRetryableRejection", err)
+	}
+	if got := emailprovider.RetryableRejectionErrorCode(err); got != emailprovider.GmailPreSendUnavailableErrorCode {
+		t.Fatalf("RetryableRejectionErrorCode() = %q, want %q", got, emailprovider.GmailPreSendUnavailableErrorCode)
+	}
+}
+
+func TestGmailProviderClassifiesCancelledPreSendContext(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		return nil, errors.New("must not be called")
+	})}
+	provider, err := emailprovider.NewGmailWithClient(
+		config.EmailConfig{},
+		config.GmailMailConfig{
+			MailboxEmail: "sales@example.com", ClientID: "client-id",
+			ClientSecret: "client-secret", RefreshToken: "refresh-token",
+		},
+		client, "http://gmail.test/gmail/v1", "http://gmail.test/token",
+	)
+	if err != nil {
+		t.Fatalf("NewGmailWithClient() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = provider.Send(ctx, emailprovider.SendRequest{
+		To: "owner@example.com", Subject: "Test", TextBody: "Body",
+	})
+	if !errors.Is(err, emailprovider.ErrRetryableRejection) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Send() error = %v, want retryable pre-send context cancellation", err)
+	}
+	if got := emailprovider.RetryableRejectionErrorCode(err); got != emailprovider.GmailPreSendUnavailableErrorCode {
+		t.Fatalf("RetryableRejectionErrorCode() = %q, want %q", got, emailprovider.GmailPreSendUnavailableErrorCode)
+	}
+	if requests != 0 {
+		t.Fatalf("HTTP requests = %d, want zero", requests)
 	}
 }
 

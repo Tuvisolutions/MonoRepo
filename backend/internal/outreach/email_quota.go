@@ -21,8 +21,16 @@ import (
 )
 
 const (
-	emailDeliveryLease = 5 * time.Minute
-	emailRampStep      = 5
+	emailDeliveryLease              = 5 * time.Minute
+	emailRampStep                   = 5
+	maxEmailDeliveryAttemptsPerStep = 3
+	emailRetryExhaustedReason       = "delivery_retry_exhausted"
+	emailFailureNotRetryableReason  = "delivery_failure_not_retryable"
+	emailFailureOutcomeConflict     = "delivery_outcome_conflict"
+	emailRetryScheduledEvent        = "retry_scheduled"
+	emailRetryExhaustedEvent        = "retry_exhausted"
+	retryableEmailFailureCodesSQL   = "'" + emailprovider.GmailRateLimitRejectedErrorCode + "', '" +
+		emailprovider.GmailPreSendUnavailableErrorCode + "', '" + emailprovider.AccountUnavailableErrorCode + "'"
 )
 
 var errDeliveryAttemptNotSending = errors.New("delivery attempt is not in sending state")
@@ -78,6 +86,51 @@ func nextScheduledSendAt(now time.Time, candidate time.Time, schedule storedEmai
 		return candidate.UTC()
 	}
 	return window.Start
+}
+
+// nextEmailDeliveryRetryAt returns the beginning of the next Sydney calendar
+// day's saved send window. A definitive failure never re-enters eligibility on
+// the same day, even when the current window is still open. Constructing the
+// next local date before converting to UTC preserves the saved wall-clock time
+// across daylight-saving transitions.
+func nextEmailDeliveryRetryAt(now time.Time, schedule storedEmailSendSchedule) time.Time {
+	localTomorrow := now.In(scheduledSendLocation).AddDate(0, 0, 1)
+	return time.Date(
+		localTomorrow.Year(),
+		localTomorrow.Month(),
+		localTomorrow.Day(),
+		schedule.startMinute/60,
+		schedule.startMinute%60,
+		0,
+		0,
+		scheduledSendLocation,
+	).UTC()
+}
+
+type emailFailureRetryDecision struct {
+	Retryable bool
+	Schedule  bool
+	Exhausted bool
+}
+
+// decideEmailFailureRetry deliberately admits only provider responses that
+// prove rejection before acceptance. Unknown outcomes, accepted sends, skips,
+// generic failures, and later bounces must never enter this automatic path.
+func decideEmailFailureRetry(status, errorCode string, totalAttempts int) emailFailureRetryDecision {
+	if status != "failed" || totalAttempts < 1 {
+		return emailFailureRetryDecision{}
+	}
+	switch strings.ToLower(strings.TrimSpace(errorCode)) {
+	case emailprovider.GmailRateLimitRejectedErrorCode,
+		emailprovider.GmailPreSendUnavailableErrorCode,
+		emailprovider.AccountUnavailableErrorCode:
+		if totalAttempts >= maxEmailDeliveryAttemptsPerStep {
+			return emailFailureRetryDecision{Retryable: true, Exhausted: true}
+		}
+		return emailFailureRetryDecision{Retryable: true, Schedule: true}
+	default:
+		return emailFailureRetryDecision{}
+	}
 }
 
 func rampedSendLimit(maxLimit, rampDay int) int {
@@ -417,6 +470,56 @@ func (repo *Postgres) SyncEmailAccounts(
 	return nil
 }
 
+const emailDeliveryClaimCampaignQuery = `
+	SELECT campaign.restaurant_id,
+	       campaign.status,
+	       campaign.campaign_type,
+	       campaign.subject,
+	       campaign.body_html,
+	       campaign.body_text,
+	       campaign.demo_token,
+	       restaurant.name,
+	       restaurant.email,
+	       restaurant.status,
+	       restaurant.shown_interest,
+	       restaurant.outreach_consent_basis,
+	       restaurant.outreach_consent_source,
+	       restaurant.outreach_consent_recorded_at,
+	       restaurant.outreach_consent_evidence,
+	       campaign.next_step,
+	       campaign.next_send_at,
+	       sequence.status,
+	       sequence.approved_at IS NOT NULL,
+	       step.enabled,
+	       EXISTS (
+	         SELECT 1
+	         FROM email_delivery_attempts prior_attempt
+	         WHERE prior_attempt.campaign_id = campaign.id
+	           AND prior_attempt.campaign_step = campaign.next_step
+	           AND (
+	             prior_attempt.status IN ('sent', 'sending', 'unknown')
+	             OR (
+	               prior_attempt.status = 'failed'
+	               AND lower(trim(prior_attempt.error_code)) NOT IN (` + retryableEmailFailureCodesSQL + `)
+	             )
+	           )
+	       ),
+	       (
+	         SELECT count(*)
+	         FROM email_delivery_attempts prior_attempt
+	         WHERE prior_attempt.campaign_id = campaign.id
+	           AND prior_attempt.campaign_step = campaign.next_step
+	           AND prior_attempt.status <> 'skipped'
+	       )
+	FROM email_campaigns AS campaign
+	JOIN restaurants AS restaurant ON restaurant.id = campaign.restaurant_id
+	JOIN outreach_email_sequences AS sequence ON sequence.id = campaign.sequence_id
+	JOIN outreach_email_sequence_steps AS step
+	  ON step.sequence_id = campaign.sequence_id
+	 AND step.position = campaign.next_step
+	WHERE campaign.id = $1
+	FOR UPDATE OF campaign, restaurant`
+
 func (repo *Postgres) ClaimEmailDelivery(
 	ctx context.Context,
 	accountKeys []string,
@@ -451,35 +554,6 @@ func (repo *Postgres) ClaimEmailDelivery(
 		return emailprovider.DeliveryClaim{}, err
 	}
 
-	const lockCampaign = `
-		SELECT campaign.restaurant_id,
-		       campaign.status,
-		       campaign.campaign_type,
-		       campaign.subject,
-		       campaign.body_html,
-		       campaign.body_text,
-		       campaign.demo_token,
-		       restaurant.name,
-		       restaurant.email,
-		       restaurant.status,
-		       restaurant.shown_interest,
-		       restaurant.outreach_consent_basis,
-		       restaurant.outreach_consent_source,
-		       restaurant.outreach_consent_recorded_at,
-		       restaurant.outreach_consent_evidence,
-		       campaign.next_step,
-		       campaign.next_send_at,
-		       sequence.status,
-		       sequence.approved_at IS NOT NULL,
-		       step.enabled
-		FROM email_campaigns AS campaign
-		JOIN restaurants AS restaurant ON restaurant.id = campaign.restaurant_id
-		JOIN outreach_email_sequences AS sequence ON sequence.id = campaign.sequence_id
-		JOIN outreach_email_sequence_steps AS step
-		  ON step.sequence_id = campaign.sequence_id
-		 AND step.position = campaign.next_step
-		WHERE campaign.id = $1
-		FOR UPDATE OF campaign, restaurant`
 	var restaurantID uuid.UUID
 	var campaignStatus string
 	var campaignType string
@@ -500,7 +574,9 @@ func (repo *Postgres) ClaimEmailDelivery(
 	var sequenceStatus string
 	var sequenceApprovalAudited bool
 	var stepEnabled bool
-	if err := tx.QueryRow(ctx, lockCampaign, delivery.CampaignID).Scan(
+	var blockingStepOutcome bool
+	var priorStepAttempts int
+	if err := tx.QueryRow(ctx, emailDeliveryClaimCampaignQuery, delivery.CampaignID).Scan(
 		&restaurantID,
 		&campaignStatus,
 		&campaignType,
@@ -521,6 +597,8 @@ func (repo *Postgres) ClaimEmailDelivery(
 		&sequenceStatus,
 		&sequenceApprovalAudited,
 		&stepEnabled,
+		&blockingStepOutcome,
+		&priorStepAttempts,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return emailprovider.DeliveryClaim{}, fmt.Errorf("%w: campaign review context is unavailable", campaigns.ErrNotEligible)
@@ -541,6 +619,12 @@ func (repo *Postgres) ClaimEmailDelivery(
 	}
 	if !sequenceApprovalAudited || (sequenceStatus != SequenceStatusApproved && sequenceStatus != SequenceStatusArchived) || !stepEnabled {
 		return emailprovider.DeliveryClaim{}, fmt.Errorf("%w: sequence version or step is not approved", campaigns.ErrNotEligible)
+	}
+	if blockingStepOutcome {
+		return emailprovider.DeliveryClaim{}, fmt.Errorf("%w: sequence step has an unsafe prior delivery outcome", campaigns.ErrNotEligible)
+	}
+	if priorStepAttempts >= maxEmailDeliveryAttemptsPerStep {
+		return emailprovider.DeliveryClaim{}, fmt.Errorf("%w: sequence step reached the delivery attempt cap", campaigns.ErrNotEligible)
 	}
 	actualRecipient := strings.ToLower(strings.TrimSpace(restaurantEmail))
 	expectedRecipient := strings.ToLower(strings.TrimSpace(delivery.Recipient))
@@ -1085,6 +1169,9 @@ func (repo *Postgres) FailEmailDelivery(
 	claim emailprovider.DeliveryClaim,
 	errorCode string,
 ) error {
+	// The finalizer schedules only the explicit definitive-rejection allowlist.
+	// Every other failure is retained for audit and stops the campaign rather
+	// than silently re-entering the eligible queue.
 	code := strings.TrimSpace(errorCode)
 	if code == "" {
 		code = "provider_rejected_before_acceptance"
@@ -1104,6 +1191,99 @@ type deliveryFinalization struct {
 	skipped           bool
 	redirected        bool
 }
+
+const countEmailDeliveryAttemptsForStepQuery = `
+	SELECT count(*) FILTER (WHERE status <> 'skipped')::int,
+	       COALESCE(bool_or(
+	         status IN ('sent', 'sending', 'unknown')
+	         OR (
+	           status = 'failed'
+	           AND lower(trim(error_code)) NOT IN (` + retryableEmailFailureCodesSQL + `)
+	         )
+	       ), false),
+	       clock_timestamp()
+	FROM email_delivery_attempts
+	WHERE campaign_id = $1 AND campaign_step = $2`
+
+const coolRetryableEmailAccountQuery = `
+	UPDATE outreach_email_accounts
+	SET available_at = GREATEST(available_at, $2),
+	    updated_at = now()
+	WHERE id = $1
+	RETURNING available_at`
+
+// resetRetryableEmailBulkJobAttemptsQuery closes the crash window between
+// recording a definitive provider rejection and the handler's normal durable
+// deferral. The attempt's bulk_job_id identifies only the job that crossed the
+// provider boundary. Resetting its persisted attempt count makes the running
+// row reclaimable after a process crash without disrupting the live handler's
+// lease heartbeat or overriding an administrator's cancellation.
+const resetRetryableEmailBulkJobAttemptsQuery = `
+	UPDATE job_runs
+	SET attempts = 0,
+	    updated_at = now()
+	WHERE id = $1
+	  AND job_type = $2
+	  AND status = 'running'`
+
+const lockFailedEmailCampaignQuery = `
+	SELECT status, current_step, next_step, next_send_at
+	FROM email_campaigns
+	WHERE id = $1
+	FOR UPDATE`
+
+const scheduleRetryableEmailCampaignQuery = `
+	UPDATE email_campaigns
+	SET status = $4,
+	    next_send_at = GREATEST(next_send_at, $5),
+	    stopped_reason = '',
+	    updated_at = now()
+	WHERE id = $1
+	  AND current_step < $2
+	  AND next_step = $2
+	  AND status = $3`
+
+const stopExhaustedEmailCampaignQuery = `
+	UPDATE email_campaigns
+	SET status = $4,
+	    stopped_reason = $5,
+	    updated_at = now()
+	WHERE id = $1
+	  AND current_step < $2
+	  AND next_step = $2
+	  AND status = $3`
+
+const stopNonRetryableEmailCampaignQuery = `
+	UPDATE email_campaigns
+	SET status = $4,
+	    stopped_reason = $5,
+	    updated_at = now()
+	WHERE id = $1
+	  AND current_step < $2
+	  AND next_step = $2
+	  AND status = $3`
+
+const retainStoppedEmailCampaignQuery = `
+	UPDATE email_campaigns
+	SET updated_at = now()
+	WHERE id = $1
+	  AND current_step < $2
+	  AND next_step = $2
+	  AND status = $3`
+
+const finalizeEmailDeliveryAttemptQuery = `
+	UPDATE email_delivery_attempts
+	SET status = $2,
+	    provider_message_id = $3,
+	    error_code = $4,
+	    sent_at = CASE WHEN $2 = 'sent' THEN now() ELSE sent_at END,
+	    lease_expires_at = NULL,
+	    updated_at = now()
+	WHERE id = $1
+	  AND status = 'sending'
+	  AND ($2 = 'unknown' OR lease_expires_at > now())
+	RETURNING campaign_id, restaurant_id, account_id, bulk_job_id, send_sequence,
+	          account_cycle, account_sequence, recipient_email, campaign_step`
 
 func (repo *Postgres) finalizeEmailDelivery(
 	ctx context.Context,
@@ -1136,21 +1316,10 @@ func (repo *Postgres) finalizeEmailDelivery(
 		return err
 	}
 
-	const updateAttempt = `
-		UPDATE email_delivery_attempts
-		SET status = $2,
-		    provider_message_id = $3,
-		    error_code = $4,
-		    sent_at = CASE WHEN $2 = 'sent' THEN now() ELSE sent_at END,
-		    lease_expires_at = NULL,
-		    updated_at = now()
-		WHERE id = $1
-		  AND status = 'sending'
-		  AND ($2 = 'unknown' OR lease_expires_at > now())
-		RETURNING campaign_id, restaurant_id, send_sequence, account_cycle, account_sequence,
-		          recipient_email, campaign_step`
 	var campaignID uuid.UUID
 	var restaurantID uuid.UUID
+	var accountID uuid.UUID
+	var bulkJobID *uuid.UUID
 	var sendSequence int64
 	var accountCycle int64
 	var accountSequence int
@@ -1158,12 +1327,22 @@ func (repo *Postgres) finalizeEmailDelivery(
 	var campaignStep int
 	err = tx.QueryRow(
 		ctx,
-		updateAttempt,
+		finalizeEmailDeliveryAttemptQuery,
 		claim.AttemptID,
 		finalization.status,
 		finalization.providerMessageID,
 		finalization.errorCode,
-	).Scan(&campaignID, &restaurantID, &sendSequence, &accountCycle, &accountSequence, &recipientEmail, &campaignStep)
+	).Scan(
+		&campaignID,
+		&restaurantID,
+		&accountID,
+		&bulkJobID,
+		&sendSequence,
+		&accountCycle,
+		&accountSequence,
+		&recipientEmail,
+		&campaignStep,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var existingStatus string
 		if statusErr := tx.QueryRow(ctx, `SELECT status FROM email_delivery_attempts WHERE id = $1`, claim.AttemptID).Scan(&existingStatus); statusErr == nil && existingStatus == finalization.status {
@@ -1175,7 +1354,82 @@ func (repo *Postgres) finalizeEmailDelivery(
 		return fmt.Errorf("update email delivery attempt: %w", err)
 	}
 
-	metadata, err := json.Marshal(map[string]any{
+	var retryDecision emailFailureRetryDecision
+	var totalStepAttempts int
+	var blockingStepOutcome bool
+	var retryAt *time.Time
+	var retryNotBefore *time.Time
+	var accountCooldownUntil *time.Time
+	var retryableFailure bool
+	var failedCampaignStatus string
+	if finalization.status == "failed" {
+		var currentStep int
+		var nextStep *int
+		var campaignNextSendAt *time.Time
+		if err := tx.QueryRow(ctx, lockFailedEmailCampaignQuery, campaignID).Scan(
+			&failedCampaignStatus,
+			&currentStep,
+			&nextStep,
+			&campaignNextSendAt,
+		); errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("outreach campaign is unavailable while recording failure")
+		} else if err != nil {
+			return fmt.Errorf("lock failed outreach campaign: %w", err)
+		}
+		if (failedCampaignStatus != campaigns.StatusSending && failedCampaignStatus != campaigns.StatusStopped) ||
+			nextStep == nil || *nextStep != campaignStep || campaignNextSendAt == nil || currentStep >= campaignStep {
+			return fmt.Errorf("outreach campaign changed before delivery failure finalization")
+		}
+
+		// Avoid a count/schedule lookup for non-allowlisted failures. A count of
+		// one is enough to ask the policy whether this code can ever retry.
+		retryableFailure = decideEmailFailureRetry(finalization.status, finalization.errorCode, 1).Retryable
+		if retryableFailure {
+			var databaseNow time.Time
+			if err := tx.QueryRow(
+				ctx,
+				countEmailDeliveryAttemptsForStepQuery,
+				campaignID,
+				campaignStep,
+			).Scan(&totalStepAttempts, &blockingStepOutcome, &databaseNow); err != nil {
+				return fmt.Errorf("count outreach email delivery attempts for step: %w", err)
+			}
+			if totalStepAttempts < 1 {
+				return fmt.Errorf("failed outreach email delivery attempt was not counted")
+			}
+			if !blockingStepOutcome {
+				retryDecision = decideEmailFailureRetry(
+					finalization.status,
+					finalization.errorCode,
+					totalStepAttempts,
+				)
+			}
+			schedule, err := loadEmailSendSchedule(ctx, tx, false)
+			if err != nil {
+				return err
+			}
+			nextRetryAt := nextEmailDeliveryRetryAt(databaseNow.UTC(), schedule)
+			retryAt = &nextRetryAt
+			actualRetryAt := nextRetryAt
+			if campaignNextSendAt.After(actualRetryAt) {
+				actualRetryAt = campaignNextSendAt.UTC()
+			}
+			retryNotBefore = &actualRetryAt
+			var actualAccountAvailableAt time.Time
+			if err := tx.QueryRow(ctx, coolRetryableEmailAccountQuery, accountID, nextRetryAt).Scan(&actualAccountAvailableAt); err != nil {
+				return fmt.Errorf("cool retryable outreach email account: %w", err)
+			}
+			actualAccountAvailableAt = actualAccountAvailableAt.UTC()
+			accountCooldownUntil = &actualAccountAvailableAt
+		}
+	}
+
+	retryScheduled := finalization.status == "failed" &&
+		failedCampaignStatus != campaigns.StatusStopped && retryDecision.Schedule
+	retryExhausted := finalization.status == "failed" &&
+		failedCampaignStatus != campaigns.StatusStopped && retryDecision.Exhausted
+
+	eventMetadata := map[string]any{
 		"step":                campaignStep,
 		"provider_message":    finalization.providerMessageID,
 		"bulk_outreach":       true,
@@ -1187,7 +1441,18 @@ func (repo *Postgres) finalizeEmailDelivery(
 		"redirected":          finalization.redirected,
 		"error_code":          finalization.errorCode,
 		"delivery_attempt_id": claim.AttemptID,
-	})
+	}
+	if retryableFailure {
+		eventMetadata["attempt_number"] = totalStepAttempts
+		eventMetadata["maximum_attempts"] = maxEmailDeliveryAttemptsPerStep
+		eventMetadata["account_cooldown_until"] = accountCooldownUntil
+		if retryScheduled {
+			eventMetadata["retry_not_before"] = retryNotBefore
+		}
+		eventMetadata["retry_scheduled"] = retryScheduled
+		eventMetadata["retry_exhausted"] = retryExhausted
+	}
+	metadata, err := json.Marshal(eventMetadata)
 	if err != nil {
 		return fmt.Errorf("encode email delivery event: %w", err)
 	}
@@ -1246,6 +1511,51 @@ func (repo *Postgres) finalizeEmailDelivery(
 			campaigns.StatusSending, campaigns.StatusStopped,
 			campaigns.StatusApproved, campaigns.StatusSent,
 		)
+	} else if finalization.status == "failed" {
+		switch {
+		case failedCampaignStatus == campaigns.StatusStopped:
+			result, err = tx.Exec(
+				ctx,
+				retainStoppedEmailCampaignQuery,
+				campaignID,
+				campaignStep,
+				campaigns.StatusStopped,
+			)
+		case retryScheduled:
+			result, err = tx.Exec(
+				ctx,
+				scheduleRetryableEmailCampaignQuery,
+				campaignID,
+				campaignStep,
+				campaigns.StatusSending,
+				campaigns.StatusApproved,
+				*retryAt,
+			)
+		case retryExhausted:
+			result, err = tx.Exec(
+				ctx,
+				stopExhaustedEmailCampaignQuery,
+				campaignID,
+				campaignStep,
+				campaigns.StatusSending,
+				campaigns.StatusStopped,
+				emailRetryExhaustedReason,
+			)
+		default:
+			stoppedReason := emailFailureNotRetryableReason
+			if blockingStepOutcome {
+				stoppedReason = emailFailureOutcomeConflict
+			}
+			result, err = tx.Exec(
+				ctx,
+				stopNonRetryableEmailCampaignQuery,
+				campaignID,
+				campaignStep,
+				campaigns.StatusSending,
+				campaigns.StatusStopped,
+				stoppedReason,
+			)
+		}
 	} else {
 		nextStatus := campaigns.StatusApproved
 		if finalization.status == "unknown" {
@@ -1266,7 +1576,46 @@ func (repo *Postgres) finalizeEmailDelivery(
 		return fmt.Errorf("finalize outreach campaign: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return fmt.Errorf("outreach campaign is not in sending state")
+		return fmt.Errorf("outreach campaign changed before delivery finalization")
+	}
+
+	if retryScheduled || retryExhausted {
+		retryEventType := emailRetryScheduledEvent
+		if retryExhausted {
+			retryEventType = emailRetryExhaustedEvent
+		}
+		if _, err := tx.Exec(
+			ctx,
+			insertEvent,
+			campaignID,
+			restaurantID,
+			retryEventType,
+			metadata,
+			claim.AttemptID,
+		); err != nil {
+			return fmt.Errorf("insert email delivery retry event: %w", err)
+		}
+	}
+
+	// A retryable code proves that this attempt failed before provider
+	// acceptance. Reset the exact running bulk job's persisted attempt count in
+	// the same transaction as the attempt, campaign, mailbox cooldown, and audit
+	// records. The live handler keeps its lease and performs the normal fenced
+	// deferral. If the process dies first, the expired running row is reclaimable
+	// instead of becoming stranded at its one-attempt worker limit.
+	if finalization.status == "failed" && retryAt != nil && bulkJobID != nil {
+		result, err := tx.Exec(
+			ctx,
+			resetRetryableEmailBulkJobAttemptsQuery,
+			*bulkJobID,
+			BulkSendJobType,
+		)
+		if err != nil {
+			return fmt.Errorf("make retryable outreach bulk job reclaimable: %w", err)
+		}
+		if result.RowsAffected() != 1 {
+			return fmt.Errorf("retryable outreach bulk job is not running and cannot be made reclaimable")
+		}
 	}
 
 	if finalization.status == "sent" {

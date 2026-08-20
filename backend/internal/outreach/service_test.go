@@ -472,6 +472,23 @@ func TestRunBulkSendFailsClosedWhenActiveSignatureIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestRunBulkSendDoesNotScheduleNonDurableRateLimitFailure(t *testing.T) {
+	repo := eligibleSequenceRepo()
+	provider := &mockEmailProvider{err: fmt.Errorf("%w: simulated local provider rejection", emailprovider.ErrRetryableRejection)}
+	service := newSequenceService(t, repo, provider)
+
+	summary, err := service.RunBulkSend(context.Background(), uuid.New())
+	if !errors.Is(err, emailprovider.ErrRetryableRejection) {
+		t.Fatalf("RunBulkSend() error = %v, want ErrRetryableRejection", err)
+	}
+	if summary.Attempted != 1 || summary.Failed != 1 || summary.StoppedReason != "delivery_error" {
+		t.Fatalf("summary = %#v, want one failed delivery_error", summary)
+	}
+	if len(repo.finalizations) != 1 || repo.finalizations[0].Outcome != "unknown" {
+		t.Fatalf("finalizations = %#v, want one unknown outcome", repo.finalizations)
+	}
+}
+
 func TestRunBulkSendSkipDoesNotAdvanceSequence(t *testing.T) {
 	repo := eligibleSequenceRepo()
 	provider := &mockEmailProvider{result: emailprovider.SendResult{Skipped: true}}
@@ -692,10 +709,14 @@ func TestSendTemplateTestTargetsSelectedSavedDraftAndSignature(t *testing.T) {
 type scheduledAccountUnavailablePool struct {
 	next  time.Time
 	sends int
+	err   error
 }
 
 func (pool *scheduledAccountUnavailablePool) Send(context.Context, emailprovider.SendRequest) (emailprovider.SendResult, error) {
 	pool.sends++
+	if pool.err != nil {
+		return emailprovider.SendResult{QuotaManaged: true, Finalized: true, AccountKey: "limited"}, pool.err
+	}
 	return emailprovider.SendResult{QuotaManaged: true, Finalized: true, AccountKey: "revoked"},
 		fmt.Errorf("%w: revoked credential", emailprovider.ErrAccountUnavailable)
 }
@@ -754,6 +775,30 @@ func TestRunBulkSendDefersAfterScheduledAccountAuthRejection(t *testing.T) {
 	}
 	if summary.StoppedReason != "account_unavailable" || summary.NextAvailableAt == nil || !summary.NextAvailableAt.Equal(next) {
 		t.Fatalf("scheduled deferral = %#v, want account_unavailable at %s", summary, next)
+	}
+	if len(repo.finalizations) != 0 {
+		t.Fatalf("service finalizations = %#v, want durable pool to own finalization", repo.finalizations)
+	}
+}
+
+func TestRunBulkSendDefersAfterScheduledRateLimitRejection(t *testing.T) {
+	repo := eligibleSequenceRepo()
+	next := time.Now().UTC().Add(3 * time.Minute)
+	pool := &scheduledAccountUnavailablePool{
+		next: next,
+		err:  fmt.Errorf("%w: gmail rate limit", emailprovider.ErrRetryableRejection),
+	}
+	service := newSequenceServiceWithEmailPool(repo, pool)
+
+	summary, err := service.RunBulkSend(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("RunBulkSend() error = %v", err)
+	}
+	if pool.sends != 1 || summary.Attempted != 1 || summary.Failed != 1 {
+		t.Fatalf("scheduled failure = sends %d, summary %#v", pool.sends, summary)
+	}
+	if summary.StoppedReason != "retryable_provider_rejection" || summary.NextAvailableAt == nil || !summary.NextAvailableAt.Equal(next) {
+		t.Fatalf("scheduled deferral = %#v, want retryable_provider_rejection at %s", summary, next)
 	}
 	if len(repo.finalizations) != 0 {
 		t.Fatalf("service finalizations = %#v, want durable pool to own finalization", repo.finalizations)

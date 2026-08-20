@@ -16,9 +16,56 @@ const ProviderDisabled = "disabled"
 var (
 	ErrSendingDisabled    = errors.New("email sending is disabled")
 	ErrAccountUnavailable = errors.New("email account failed before message acceptance")
+	ErrRetryableRejection = errors.New("email failed before provider acceptance; retry later")
 )
 
-const AccountUnavailableErrorCode = "credential_or_authorization_rejected"
+const (
+	AccountUnavailableErrorCode      = "credential_or_authorization_rejected"
+	GmailRateLimitRejectedErrorCode  = "gmail_rate_limit_rejected"
+	GmailPreSendUnavailableErrorCode = "gmail_pre_send_unavailable"
+)
+
+// RetryableRejectionError records a provider-confirmed pre-acceptance failure,
+// including failure to acquire the provider access token before the message
+// endpoint is called. Its code is intentionally controlled by this package so
+// provider response text cannot leak into the delivery ledger.
+type RetryableRejectionError struct {
+	code  string
+	cause error
+}
+
+func (err *RetryableRejectionError) Error() string {
+	if err == nil || err.cause == nil {
+		return ErrRetryableRejection.Error()
+	}
+	return ErrRetryableRejection.Error() + ": " + err.cause.Error()
+}
+
+func (err *RetryableRejectionError) Is(target error) bool {
+	return target == ErrRetryableRejection
+}
+
+func (err *RetryableRejectionError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.cause
+}
+
+// RetryableRejectionErrorCode returns the stable, sanitized provider code for
+// a confirmed retryable rejection. It returns an empty string for all other
+// errors, including ambiguous provider outcomes.
+func RetryableRejectionErrorCode(err error) string {
+	var rejected *RetryableRejectionError
+	if !errors.As(err, &rejected) {
+		return ""
+	}
+	return rejected.code
+}
+
+func newRetryableRejectionError(code string, cause error) error {
+	return &RetryableRejectionError{code: strings.TrimSpace(code), cause: cause}
+}
 
 type SendRequest struct {
 	To         string

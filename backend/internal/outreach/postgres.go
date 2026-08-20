@@ -180,6 +180,26 @@ const eligibleLeadsBaseQuery = `
 	  AND sequence.status IN ('approved', 'archived')
 	  AND sequence.approved_at IS NOT NULL
 	  AND step.enabled = true
+	  AND NOT EXISTS (
+	    SELECT 1
+	    FROM email_delivery_attempts prior_attempt
+	    WHERE prior_attempt.campaign_id = campaign.id
+	      AND prior_attempt.campaign_step = campaign.next_step
+	      AND (
+	        prior_attempt.status IN ('sent', 'sending', 'unknown')
+	        OR (
+	          prior_attempt.status = 'failed'
+	          AND lower(trim(prior_attempt.error_code)) NOT IN (` + retryableEmailFailureCodesSQL + `)
+	        )
+	      )
+	  )
+	  AND (
+	    SELECT count(*)
+	    FROM email_delivery_attempts prior_attempt
+	    WHERE prior_attempt.campaign_id = campaign.id
+	      AND prior_attempt.campaign_step = campaign.next_step
+	      AND prior_attempt.status <> 'skipped'
+	  ) < 3
 	  AND length(trim(restaurant.name)) > 0
 	  AND lower(trim(restaurant.email)) ~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$'
 	  AND (
@@ -481,42 +501,64 @@ func (repo *Postgres) PrepareSequenceDelivery(ctx context.Context, campaignID uu
 	return nil
 }
 
+const nextSequenceDueAtQuery = `
+	SELECT min(campaign.next_send_at)
+	FROM email_campaigns campaign
+	JOIN restaurants restaurant ON restaurant.id = campaign.restaurant_id
+	JOIN outreach_email_sequences sequence ON sequence.id = campaign.sequence_id
+	JOIN outreach_email_sequence_steps step
+	  ON step.sequence_id = campaign.sequence_id
+	 AND step.position = campaign.next_step
+	WHERE campaign.campaign_type = 'outreach'
+	  AND campaign.sequence_id IS NOT NULL
+	  AND campaign.status = 'approved'
+	  AND campaign.current_step > 0
+	  AND campaign.next_step IS NOT NULL
+	  AND campaign.next_send_at IS NOT NULL
+	  AND sequence.status IN ('approved', 'archived')
+	  AND sequence.approved_at IS NOT NULL
+	  AND step.enabled = true
+	  AND length(trim(restaurant.name)) > 0
+	  AND lower(trim(restaurant.email)) ~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$'
+	  AND (
+	    SELECT count(*)
+	    FROM restaurants shared_restaurant
+	    WHERE lower(trim(shared_restaurant.email)) = lower(trim(restaurant.email))
+	  ) <= 3
+	  AND restaurant.status IN ('lead', 'emailed')
+	  AND restaurant.shown_interest = false
+	  AND restaurant.outreach_consent_basis = 'inferred_business'
+	  AND restaurant.outreach_consent_recorded_at IS NOT NULL
+	  AND length(trim(restaurant.outreach_consent_source)) > 0
+	  AND jsonb_typeof(restaurant.outreach_consent_evidence) = 'object'
+	  AND restaurant.outreach_consent_evidence <> '{}'::jsonb
+	  AND NOT EXISTS (
+	    SELECT 1
+	    FROM email_delivery_attempts prior_attempt
+	    WHERE prior_attempt.campaign_id = campaign.id
+	      AND prior_attempt.campaign_step = campaign.next_step
+	      AND (
+	        prior_attempt.status IN ('sent', 'sending', 'unknown')
+	        OR (
+	          prior_attempt.status = 'failed'
+	          AND lower(trim(prior_attempt.error_code)) NOT IN (` + retryableEmailFailureCodesSQL + `)
+	        )
+	      )
+	  )
+	  AND (
+	    SELECT count(*)
+	    FROM email_delivery_attempts prior_attempt
+	    WHERE prior_attempt.campaign_id = campaign.id
+	      AND prior_attempt.campaign_step = campaign.next_step
+	      AND prior_attempt.status <> 'skipped'
+	  ) < 3`
+
 func (repo *Postgres) NextSequenceDueAt(ctx context.Context) (*time.Time, error) {
 	if repo.pool == nil {
 		return nil, fmt.Errorf("database pool is not configured")
 	}
 	var next *time.Time
-	if err := repo.pool.QueryRow(ctx, `
-		SELECT min(campaign.next_send_at)
-		FROM email_campaigns campaign
-		JOIN restaurants restaurant ON restaurant.id = campaign.restaurant_id
-		JOIN outreach_email_sequences sequence ON sequence.id = campaign.sequence_id
-		JOIN outreach_email_sequence_steps step
-		  ON step.sequence_id = campaign.sequence_id
-		 AND step.position = campaign.next_step
-		WHERE campaign.campaign_type = 'outreach'
-		  AND campaign.sequence_id IS NOT NULL
-		  AND campaign.status = 'approved'
-		  AND campaign.current_step > 0
-		  AND campaign.next_step IS NOT NULL
-		  AND campaign.next_send_at IS NOT NULL
-		  AND sequence.status IN ('approved', 'archived')
-		  AND sequence.approved_at IS NOT NULL
-		  AND step.enabled = true
-		  AND length(trim(restaurant.name)) > 0
-		  AND lower(trim(restaurant.email)) ~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$'
-		  AND (
-		    SELECT count(*)
-		    FROM restaurants shared_restaurant
-		    WHERE lower(trim(shared_restaurant.email)) = lower(trim(restaurant.email))
-		  ) <= 3
-		  AND restaurant.status IN ('lead', 'emailed')
-		  AND restaurant.shown_interest = false
-		  AND restaurant.outreach_consent_basis = 'inferred_business'
-		  AND restaurant.outreach_consent_recorded_at IS NOT NULL
-		  AND length(trim(restaurant.outreach_consent_source)) > 0
-		  AND jsonb_typeof(restaurant.outreach_consent_evidence) = 'object'
-		  AND restaurant.outreach_consent_evidence <> '{}'::jsonb`).Scan(&next); err != nil {
+	if err := repo.pool.QueryRow(ctx, nextSequenceDueAtQuery).Scan(&next); err != nil {
 		return nil, fmt.Errorf("get next sequence due time: %w", err)
 	}
 	return next, nil
@@ -558,7 +600,27 @@ const recipientStatusCountsQuery = `
 		           AND restaurant.outreach_consent_recorded_at IS NOT NULL
 		           AND length(trim(restaurant.outreach_consent_source)) > 0
 		           AND jsonb_typeof(restaurant.outreach_consent_evidence) = 'object'
-		           AND restaurant.outreach_consent_evidence <> '{}'::jsonb AS has_consent_evidence
+		           AND restaurant.outreach_consent_evidence <> '{}'::jsonb AS has_consent_evidence,
+		         NOT EXISTS (
+		           SELECT 1
+		           FROM email_delivery_attempts prior_attempt
+		           WHERE prior_attempt.campaign_id = campaign.id
+		             AND prior_attempt.campaign_step = campaign.next_step
+	             AND (
+	               prior_attempt.status IN ('sent', 'sending', 'unknown')
+	               OR (
+	                 prior_attempt.status = 'failed'
+	                 AND lower(trim(prior_attempt.error_code)) NOT IN (` + retryableEmailFailureCodesSQL + `)
+	               )
+	             )
+		         ) AS has_no_blocking_step_outcome,
+		         (
+		           SELECT count(*)
+		           FROM email_delivery_attempts prior_attempt
+		           WHERE prior_attempt.campaign_id = campaign.id
+		             AND prior_attempt.campaign_step = campaign.next_step
+		             AND prior_attempt.status <> 'skipped'
+		         ) < 3 AS has_attempt_capacity
 		  FROM email_campaigns campaign
 		  JOIN restaurants restaurant ON restaurant.id = campaign.restaurant_id
 		  JOIN outreach_email_sequences sequence ON sequence.id = campaign.sequence_id
@@ -579,6 +641,8 @@ const recipientStatusCountsQuery = `
 		           AND lifecycle_eligible
 		           AND has_no_interest
 		           AND has_consent_evidence
+		           AND has_no_blocking_step_outcome
+		           AND has_attempt_capacity
 		           AND next_step IS NOT NULL
 		           AND next_send_at IS NOT NULL AS policy_eligible
 		  FROM recipient_state

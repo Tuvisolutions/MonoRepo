@@ -4223,3 +4223,52 @@ production file, database row, job control, or Gmail state changed during this
 work. Production remains on release `8c34503` at schema 54, and Phase 2/3
 automation remains separately paused. Deployment still requires explicit
 approval; no real-email test is part of rollout verification.
+
+## 2026-08-19 — Bounded recovery for definitive outreach failures prepared
+
+**Role / Delivery:** Replaced the proposed restaurant-field reset with a
+campaign-step recovery policy that preserves delivery and quota history. Gmail
+429 and structured rate-limit 403 responses now record
+`gmail_rate_limit_rejected`; transient OAuth/token-stage failures before the
+message endpoint record `gmail_pre_send_unavailable`; credential/authorization
+rejections retain their dedicated account quarantine. These three controlled
+pre-acceptance outcomes schedule the exact failed campaign step no earlier than
+the next saved Australia/Sydney window, preserve any later Phase 2/3 hold, cool
+the selected account without refunding quota, and stop after three total
+non-skipped attempts with `delivery_retry_exhausted`.
+
+Unknown, sent, sending, and non-allowlisted failures are excluded before quota
+or provider access. This includes historical `gmail_sender_rate_limit_bounce`
+rows, because API acceptance followed by a bounce requires authoritative DSN
+reconciliation rather than an inferred resend. The eligible list/count,
+next-due calculation, recipient aggregates, and recipient-progress holds all
+share these guards. Finalization records retry audit metadata and makes the
+exact running one-attempt bulk job crash-reclaimable without changing its live
+status, owner, payload, availability, or lease; normal deferral remains
+owner-fenced.
+
+**Checks Run:** The full backend passed 668 tests across 46 packages and the
+targeted outreach/provider/jobs race suite passed 216 tests. Go vet, every
+backend command build, repository context checks, OpenAPI validation, gofmt,
+and diff checks passed; OpenAPI retained 11 pre-existing warnings. Four
+environment-gated transaction scenarios passed against an isolated disposable
+PostgreSQL schema-54 database: scheduled recovery plus fenced deferral,
+inclusive exhaustion, later follow-up hold/audit preservation, and pre-quota
+rejection of both unknown and accepted-then-rate-limit-bounced history. The
+host's PostgreSQL 14 required temporary compatibility edits to two unrelated
+PG15 column-specific scrape foreign-key clauses while constructing that test
+database; no repository migration was changed.
+
+**Business Value / Plan Fit:** Recoverable provider failures return to the
+normal, paced sender pool on a later Sydney send day without corrupting
+restaurant contact history, mailbox warm-up, quotas, campaign phase, or the
+daily delivery ledger. Operators see unsafe/exhausted states as paused instead
+of watching them spin or silently duplicate.
+
+**Risks / Approval State:** This policy is local and unreleased, adds no schema
+migration, and does not automatically reconcile accepted-then-bounced mail.
+The known contact bounce rows therefore remain paused under this release until
+an authenticated, exactly correlated bounce workflow is approved. No production
+file, row, control, Gmail/provider state, or real email changed. Production
+remains on `8c34503`/schema 54; deploy API and worker together with outreach
+disabled, and enable sending only under separate explicit approval.

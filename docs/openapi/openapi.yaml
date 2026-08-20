@@ -5022,7 +5022,7 @@ components:
           type: boolean
         hold_reason:
           type: string
-          description: Includes shared_email_limit when more than three restaurant records use the address.
+          description: Includes shared_email_limit for repeated addresses and delivery_unknown, delivery_failure_not_retryable, delivery_outcome_conflict, or delivery_retry_exhausted when retry safety pauses the campaign.
 
     OutreachRecipientList:
       type: object
