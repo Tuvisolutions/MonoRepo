@@ -1752,6 +1752,68 @@ paths:
               schema:
                 $ref: '#/components/schemas/OutreachRecipientList'
 
+  /api/v1/outreach/deliveries:
+    get:
+      tags: [Email Campaigns]
+      summary: List scheduled outreach attempts for one Sydney date
+      operationId: listDailyOutreachDeliveries
+      security:
+        - bearerAuth: []
+      description: |
+        Requires role `internal_admin`. Lists quota-managed scheduled outreach attempts
+        whose attempt timestamp falls on the requested `Australia/Sydney` calendar date.
+        All ledger outcomes are included so From-address totals reconcile: sending,
+        sent, skipped, failed, and unknown. A `sent` outcome means the provider accepted
+        the message; it does not prove inbox delivery. A later bounce appears as failed
+        only after a separate reconciliation records it. Template tests, inbox replies,
+        health checks, and other direct messages are outside this ledger.
+      parameters:
+        - name: date
+          in: query
+          required: true
+          description: Australia/Sydney calendar date.
+          schema:
+            type: string
+            format: date
+        - name: account_id
+          in: query
+          description: Optional ledger sender id returned in the response's sender summaries.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Daily sender totals and paginated scheduled delivery attempts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyOutreachDeliveryList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Scheduled outreach delivery history is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/outreach/inbox:
     get:
       tags: [Email Campaigns]
@@ -5279,6 +5341,148 @@ components:
           type: integer
           minimum: 0
           description: Confirmed sends whose campaign step is not 1, 2, or 3.
+
+    OutreachDeliveryOutcomeCounts:
+      type: object
+      required: [total, sent, failed, unknown, skipped, sending]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          description: All scheduled quota attempts for the selected Sydney date and sender filter.
+        sent:
+          type: integer
+          minimum: 0
+          description: Attempts currently marked sent after provider acceptance; a separately reconciled bounce may later move an attempt to failed.
+        failed:
+          type: integer
+          minimum: 0
+          description: Attempts with a known final failure, including reconciled bounces.
+        unknown:
+          type: integer
+          minimum: 0
+          description: Ambiguous provider outcomes that must not be retried automatically.
+        skipped:
+          type: integer
+          minimum: 0
+        sending:
+          type: integer
+          minimum: 0
+
+    DailyOutreachDeliverySender:
+      type: object
+      required: [account_id, account_key, sender_email, counts]
+      properties:
+        account_id:
+          type: string
+          format: uuid
+          description: Stable delivery-ledger sender id used by the account_id filter.
+        account_key:
+          type: string
+        sender_email:
+          type: string
+          description: Current effective From address for this ledger sender.
+        counts:
+          $ref: '#/components/schemas/OutreachDeliveryOutcomeCounts'
+
+    DailyOutreachDelivery:
+      type: object
+      required:
+        - id
+        - restaurant_id
+        - restaurant_name
+        - recipient_email
+        - account_id
+        - account_key
+        - sender_email
+        - campaign_step
+        - status
+        - outcome
+        - attempted_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        restaurant_id:
+          type: string
+          format: uuid
+        restaurant_name:
+          type: string
+        recipient_email:
+          type: string
+          description: Immutable recipient address captured by the delivery attempt; legacy rows may be blank.
+        account_id:
+          type: string
+          format: uuid
+        account_key:
+          type: string
+        sender_email:
+          type: string
+          description: Exact outbound snapshot From address when recorded, otherwise the sender's current From address.
+        campaign_step:
+          type: integer
+          minimum: 0
+          description: Sequence email number. Values 1, 2, and 3 correspond to Emails/Phases 1, 2, and 3.
+        status:
+          type: string
+          enum: [sending, sent, skipped, failed, unknown]
+        outcome:
+          type: string
+          description: Safe operator label derived from status and controlled error code.
+        error_code:
+          type: string
+          description: Controlled machine-readable error classification; raw provider responses are never returned.
+        subject:
+          type: string
+          description: Exact outbound snapshot subject when one was recorded; otherwise blank.
+        provider_message_id:
+          type: string
+          description: Opaque provider acceptance identifier when available.
+        attempted_at:
+          type: string
+          format: date-time
+        outcome_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Final outcome timestamp; omitted while the attempt is still in progress.
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Provider acceptance timestamp when one was recorded; it may remain on a later-reconciled failed or bounced attempt.
+
+    DailyOutreachDeliveryList:
+      type: object
+      required: [date, timezone, summary, senders, deliveries, total, limit, offset]
+      properties:
+        date:
+          type: string
+          format: date
+        timezone:
+          type: string
+          enum: [Australia/Sydney]
+        summary:
+          $ref: '#/components/schemas/OutreachDeliveryOutcomeCounts'
+        senders:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyOutreachDeliverySender'
+        deliveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyOutreachDelivery'
+        total:
+          type: integer
+          minimum: 0
+          description: Total matching attempts before pagination.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        offset:
+          type: integer
+          minimum: 0
 
     EmailJobControl:
       type: object

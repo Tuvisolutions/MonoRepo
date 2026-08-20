@@ -24,6 +24,7 @@ var (
 	ErrInboxReplyUnavailable = errors.New("inbox reply mailbox is not configured for sending")
 	ErrInvalidSendSchedule   = errors.New("outreach send schedule is invalid")
 	ErrSendScheduleLocked    = errors.New("outreach send schedule cannot change while the email job is enabled or active")
+	ErrInvalidDeliveryQuery  = errors.New("outreach delivery history query is invalid")
 )
 
 type BulkSendSummary struct {

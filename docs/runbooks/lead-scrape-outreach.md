@@ -143,6 +143,26 @@ does not require a restart. Disabling an account preserves its messages, quota
 history, and sync history but excludes it from new sends and polls. Adding or
 replacing an account does not enable the bulk email job.
 
+## Review daily scheduled send history
+
+Use **Outreach → Send history** to inspect one `Australia/Sydney` calendar date.
+The summary shows the full-day attempt counts for every configured From address,
+and the detail list can be filtered by that stable sender account. Each row shows
+the attempt time, restaurant, immutable recipient address, sequence email/phase,
+stored outbound subject when available, controlled outcome, and provider message
+identifier when one was recorded.
+
+The screen is an attempt ledger, not an inbox-delivery report. `Sent` means the
+attempt is currently marked sent after provider acceptance; it does not prove
+recipient inbox delivery. Failed, ambiguous, skipped, and in-progress attempts
+remain visible so the sender totals reconcile. A later bounce appears as failed
+only after a separate reconciliation records it. Raw provider responses and
+message bodies are never returned by this endpoint.
+
+Template test sends, manual inbox replies, health checks, consultation messages,
+and other direct email paths are not quota-managed delivery attempts and are not
+included in this screen.
+
 ## Unified inbox across configured sending mailboxes
 
 Set `OUTREACH_INBOUND_ENABLED=true` and optionally

@@ -4180,3 +4180,46 @@ changed while diagnosing or validating it. Production remains on release
 `8c34503` at schema 54. Phase 2/3 automation remains separately paused; rollout
 requires explicit production deployment approval and must not send a real test
 email.
+
+## 2026-08-19 — Daily per-sender outreach history prepared
+
+**Role / Delivery:** Added an internal-admin **Outreach → Send history** screen
+and `GET /api/v1/outreach/deliveries` contract for one Australia/Sydney calendar
+date. The screen shows complete-day counts per configured From address plus a
+paginated attempt list with Sydney time, restaurant, immutable recipient,
+sequence email/phase, exact stored outbound subject when available, controlled
+outcome, safe error code, and provider message identifier. Date and sender
+filters, current-day refresh, loading/error/empty states, and responsive mobile
+cards are included.
+
+The API reads `email_delivery_attempts` and the linked outbound message snapshot
+inside one read-only repeatable-read transaction so summaries and rows describe
+the same active-send snapshot. It includes sent, failed, unknown, skipped, and
+in-progress outcomes, uses start-inclusive/end-exclusive Sydney date bounds
+across DST, and never returns message bodies, raw provider errors, credentials,
+tokens, or opaque non-Gmail provider identities. `Sent` is explicitly described
+as the attempt's current provider-acceptance state, not inbox delivery; a later
+bounce appears as failed only after separate reconciliation records it. Template
+tests, inbox replies, health checks, and other direct messages remain outside the
+scheduled-attempt ledger.
+
+**Checks Run:** The full backend passed 632 tests across 46 packages; targeted
+race tests passed 181 tests. Go vet and all backend command builds passed. Admin
+ESLint, nonincremental TypeScript, and the 14-route Next.js 16.3 production build
+passed. OpenAPI validation passed with the same 11 pre-existing warnings;
+repository context and diff checks passed. Three independent backend, frontend,
+and contract reviews found no remaining blocker. No disposable PostgreSQL was
+available locally, so query syntax and contracts were reviewed and unit-tested
+but the new SELECTs were not executed against a real database.
+
+**Business Value / Plan Fit:** An operator can now answer which restaurants were
+attempted from each visible From address on a chosen Sydney date, how each
+attempt ended, and which Gmail/provider identifier supports a Sent-folder
+comparison without relying on ambiguous lifetime counters.
+
+**Risks / Approval State:** This API/admin feature is local and unreleased. It
+adds no migration and performs no send, reconciliation, or provider action. No
+production file, database row, job control, or Gmail state changed during this
+work. Production remains on release `8c34503` at schema 54, and Phase 2/3
+automation remains separately paused. Deployment still requires explicit
+approval; no real-email test is part of rollout verification.

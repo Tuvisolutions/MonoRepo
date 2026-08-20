@@ -141,6 +141,55 @@ func (handler *OutreachBulkHandler) Status(w http.ResponseWriter, r *http.Reques
 	handler.writeJSON(w, http.StatusOK, result)
 }
 
+func (handler *OutreachBulkHandler) ListDeliveries(w http.ResponseWriter, r *http.Request) {
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		handler.writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication is required.")
+		return
+	}
+	queryValues := r.URL.Query()
+	query := outreach.DailyDeliveryQuery{
+		Date:  strings.TrimSpace(queryValues.Get("date")),
+		Limit: 50,
+	}
+	if raw := strings.TrimSpace(queryValues.Get("account_id")); raw != "" {
+		accountID, err := uuid.Parse(raw)
+		if err != nil {
+			handler.writeError(w, http.StatusBadRequest, "invalid_request", "account_id must be a valid UUID.")
+			return
+		}
+		query.AccountID = &accountID
+	}
+	if raw := strings.TrimSpace(queryValues.Get("limit")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 100 {
+			handler.writeError(w, http.StatusBadRequest, "invalid_request", "limit must be between 1 and 100.")
+			return
+		}
+		query.Limit = limit
+	}
+	if raw := strings.TrimSpace(queryValues.Get("offset")); raw != "" {
+		offset, err := strconv.Atoi(raw)
+		if err != nil || offset < 0 {
+			handler.writeError(w, http.StatusBadRequest, "invalid_request", "offset must be a non-negative integer.")
+			return
+		}
+		query.Offset = offset
+	}
+
+	result, err := handler.service.ListDailyDeliveries(r.Context(), principal, query)
+	switch {
+	case errors.Is(err, restaurants.ErrForbidden):
+		handler.writeError(w, http.StatusForbidden, "forbidden", "Internal administrator access is required.")
+	case errors.Is(err, outreach.ErrInvalidDeliveryQuery):
+		handler.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case err != nil:
+		handler.writeError(w, http.StatusInternalServerError, "delivery_history_failed", "Scheduled outreach delivery history is unavailable.")
+	default:
+		handler.writeJSON(w, http.StatusOK, result)
+	}
+}
+
 func (handler *OutreachBulkHandler) ListSequences(w http.ResponseWriter, r *http.Request) {
 	principal, ok := auth.PrincipalFromContext(r.Context())
 	if !ok {
